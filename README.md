@@ -1,6 +1,7 @@
 # Satellite Tracker
 
 A C++ GUI application for tracking satellites in real-time, showing which satellites are currently visible from your location.
+Valid radio frequencies provided, per satellite, when available.
 
 ## Features
 
