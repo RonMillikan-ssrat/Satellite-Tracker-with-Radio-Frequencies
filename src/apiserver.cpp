@@ -119,7 +119,8 @@ ApiServer::Response ApiServer::handleRequest(const QString& method, const QUrl& 
             {"timeUtc", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
             {"positionsTimeUtc", m_tracker->getPositionsTime().toString(Qt::ISODateWithMs)},
             {"satelliteCount", m_tracker->getAllSatellites().size()},
-            {"visibleCount", m_tracker->getVisibleSatellites().size()}
+            {"visibleCount", m_tracker->getVisibleSatellites().size()},
+            {"transmitterSatelliteCount", m_tracker->transmitterSatelliteCount()}
         });
         return r;
     }
