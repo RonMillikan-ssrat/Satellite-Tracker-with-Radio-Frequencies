@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 #include "satellitetracker.h"
 #include "skymapwidget.h"
+#include "apiserver.h"
 
 // Custom table item that sorts by numeric value instead of text
 class NumericTableItem : public QTableWidgetItem {
@@ -63,6 +64,7 @@ private:
     // Backend
     SatelliteTracker* m_tracker;
     QTimer* m_updateTimer;
+    ApiServer* m_apiServer;
     
     // Setup functions
     void setupUI();

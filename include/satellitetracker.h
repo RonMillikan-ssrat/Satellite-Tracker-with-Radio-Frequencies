@@ -36,6 +36,9 @@ public:
     // Get visible satellites
     QList<Satellite> getVisibleSatellites() const;
     
+    // UTC time the current positions were calculated for
+    QDateTime getPositionsTime() const { return m_positionsTime; }
+    
     // Get all satellites
     QList<Satellite> getAllSatellites() const { return m_satellites; }
     
@@ -60,6 +63,7 @@ private slots:
 private:
     ObserverLocation m_observer;
     QList<Satellite> m_satellites;
+    QDateTime m_positionsTime;
     QNetworkAccessManager* m_networkManager;
     
     void parseLocationData(const QByteArray& data);

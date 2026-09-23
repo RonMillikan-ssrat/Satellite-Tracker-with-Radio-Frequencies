@@ -21,11 +21,9 @@ User Location → SatelliteTracker → SGP4Wrapper → Satellite Positions
 - Emits signals for GUI updates
 
 #### SGP4Wrapper
-**Current Status**: Simplified implementation
-**What it does**: Basic circular orbit approximation
-**What it should do**: Full SGP4 propagation
-
-The current implementation is a placeholder. It demonstrates the interface but does NOT provide accurate satellite positions.
+**Current Status**: Full SGP4/SDP4 via libsgp4 (vendored in `external/sgp4`)
+**What it does**: Propagates each TLE to the requested time and computes
+geodetic position plus azimuth, elevation, range and range rate from the observer
 
 #### SkyMapWidget
 - Polar projection sky map (zenith at center)
@@ -277,9 +275,8 @@ export CMAKE_PREFIX_PATH=/path/to/Qt/6.x.x/gcc_64
 - CelesTrak may rate-limit requests
 
 ### Inaccurate Positions
-- Current SGP4 is simplified!
-- Integrate real SGP4 library
 - Check TLE data freshness (update daily)
+- Check the observer location and system clock
 
 ## Resources
 
