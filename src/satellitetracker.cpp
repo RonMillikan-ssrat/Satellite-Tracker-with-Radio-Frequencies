@@ -179,6 +179,7 @@ void SatelliteTracker::onTLEReplyFinished() {
 
 void SatelliteTracker::updatePositions() {
     QDateTime now = QDateTime::currentDateTimeUtc();
+    m_positionsTime = now;
     
     for (int i = 0; i < m_satellites.size(); ++i) {
         Satellite& sat = m_satellites[i];

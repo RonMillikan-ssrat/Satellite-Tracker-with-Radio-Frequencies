@@ -8,6 +8,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_tracker(new SatelliteTracker(this))
     , m_updateTimer(new QTimer(this))
+    , m_apiServer(new ApiServer(m_tracker, this))
 {
     setupUI();
     setupConnections();
@@ -18,6 +19,13 @@ MainWindow::MainWindow(QWidget *parent)
     // Set window properties
     setWindowTitle("Satellite Tracker");
     resize(1600, 850); // Wider to show full table without scrolling
+
+    // Start local JSON API for external tools (port via SAT_TRACKER_API_PORT)
+    quint16 apiPort = qEnvironmentVariableIntValue("SAT_TRACKER_API_PORT");
+    if (apiPort == 0) apiPort = 8765;
+    if (!m_apiServer->start(apiPort)) {
+        m_statusLabel->setText(QString("Error: could not start API on port %1").arg(apiPort));
+    }
 
     // Auto-fetch location and TLE data on startup
     m_tracker->fetchCurrentLocation();

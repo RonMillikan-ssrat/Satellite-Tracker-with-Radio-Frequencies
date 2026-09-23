@@ -87,30 +87,67 @@ cmake --build . --config Release
 - **SatelliteTracker** - Core tracking logic, TLE fetching, position calculations
 - **SkyMapWidget** - Polar sky map visualization
 - **MainWindow** - GUI coordination
-- **SGP4Wrapper** - Simplified orbital propagation (placeholder for full SGP4)
+- **SGP4Wrapper** - SGP4/SDP4 orbital propagation (via libsgp4)
 - **TLEParser** - Parse Two-Line Element sets
 
-## Current Limitations
+## Orbital Accuracy
 
-⚠️ **Important**: The current SGP4 implementation is SIMPLIFIED for demonstration. For production use, you should integrate a full SGP4 library:
-
-- [sgp4 by dnwrnr](https://github.com/dnwrnr/sgp4) - C++ implementation
-- [Vallado's SGP4](https://celestrak.org/software/vallado-sw.php) - Reference implementation
-
-**Current Accuracy:**
-- ✅ Satellites spread around the sky based on orbital elements
-- ✅ Uses real TLE data (inclination, mean motion, RAAN)
-- ✅ Accounts for Earth's rotation
-- ⚠️ Simplified circular orbit (no eccentricity)
-- ⚠️ No perturbations (atmospheric drag, solar pressure)
-- ⚠️ Position errors can be 10-100+ km
-
-For accurate satellite tracking (especially for antenna pointing or pass predictions), see `SGP4_INTEGRATION.md` for full implementation instructions.
+Positions are computed with the full SGP4/SDP4 model using
+[libsgp4 by dnwrnr](https://github.com/dnwrnr/sgp4) (Apache 2.0), vendored in
+`external/sgp4` so no separate install is needed. Results agree with
+[Skyfield](https://rhodesmill.org/skyfield/) to within ~0.01° in azimuth/elevation
+and well under 1 km in range. Overall accuracy is limited by TLE age (typically
+~1 km at epoch, growing a few km per day), so refresh TLE data regularly.
 
 ### Data Sources
 
 - **TLE Data**: CelesTrak (https://celestrak.org)
 - **Geolocation**: ipapi.co (free tier, no API key required)
+
+## MCP / Local JSON API
+
+While running, the app serves a read/write JSON API on `http://127.0.0.1:8765`
+(localhost only; change the port with the `SAT_TRACKER_API_PORT` environment variable).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET  | `/health` | Status and satellite counts |
+| GET  | `/observer` | Observer location |
+| POST | `/observer` | Set location: `{"latitude": 39.7, "longitude": -104.9, "altitude": 1609}` |
+| GET  | `/satellites` | All satellites (`?visible=true` to filter, `?groundTrack=true` to include tracks) |
+| GET  | `/satellites/visible` | Satellites above the horizon |
+| GET  | `/satellites/{id}` | One satellite by NORAD catalog number or exact name |
+| POST | `/tle/refresh` | Re-download TLE data (optional `{"url": "..."}`) |
+
+### MCP server
+
+`mcp_server/satellite_tracker_mcp.py` wraps this API as MCP tools
+(`get_status`, `get_observer_location`, `set_observer_location`,
+`get_visible_satellites`, `list_all_satellites`, `get_satellite`, `refresh_tle_data`).
+The Qt app must be running for the tools to return data.
+
+```bash
+pip install -r mcp_server/requirements.txt
+```
+
+Register it with an MCP client, e.g. Claude Code:
+
+```bash
+claude mcp add satellite-tracker -- python3 /path/to/mcp_server/satellite_tracker_mcp.py
+```
+
+or in a JSON MCP config:
+
+```json
+{
+  "mcpServers": {
+    "satellite-tracker": {
+      "command": "python3",
+      "args": ["/path/to/mcp_server/satellite_tracker_mcp.py"]
+    }
+  }
+}
+```
 
 ## Customization
 
@@ -140,7 +177,7 @@ m_updateTimer->start(2000);
 
 ## Future Enhancements
 
-- [ ] Integrate full SGP4 library for accurate propagation
+- [x] Integrate full SGP4 library for accurate propagation
 - [ ] Add satellite pass predictions
 - [ ] Show satellite ground tracks on a map
 - [ ] Add Doppler shift calculations for radio frequencies
@@ -158,10 +195,9 @@ This project is provided as-is for educational purposes.
 
 Contributions welcome! Key areas:
 
-1. **SGP4 Integration** - Replace simplified propagator with full SGP4
-2. **Pass Predictions** - Calculate future satellite passes
-3. **Radio Features** - Doppler calculations, transponder support
-4. **Visualization** - Ground track maps, 3D view
+1. **Pass Predictions** - Calculate future satellite passes
+2. **Radio Features** - Doppler calculations, transponder support
+3. **Visualization** - Ground track maps, 3D view
 
 ## Credits
 

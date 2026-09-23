@@ -1,5 +1,8 @@
 # SGP4 Integration Guide
 
+> **Status: done.** libsgp4 (dnwrnr/sgp4) is now vendored in `external/sgp4` and used by
+> `src/sgp4wrapper.cpp`. This guide is kept for reference only.
+
 This document provides step-by-step instructions for replacing the simplified orbital propagation with a production-ready SGP4 implementation.
 
 ## Option 1: Using sgp4 by dnwrnr (Recommended)

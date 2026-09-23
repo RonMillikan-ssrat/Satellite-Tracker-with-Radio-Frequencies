@@ -9,7 +9,13 @@ QList<Satellite> TLEParser::parseTLEData(const QString& tleData) {
     
     // TLE format is 3 lines: name, line1, line2
     for (int i = 0; i + 2 < lines.size(); i += 3) {
-        QString name = lines[i].trimmed();
+        // CelesTrak HTML-escapes names (e.g. "RS-44 &amp; BREEZE-KM R/B")
+        QString name = lines[i].trimmed()
+                           .replace("&lt;", "<")
+                           .replace("&gt;", ">")
+                           .replace("&quot;", "\"")
+                           .replace("&#39;", "'")
+                           .replace("&amp;", "&");
         QString line1 = lines[i + 1].trimmed();
         QString line2 = lines[i + 2].trimmed();
         
