@@ -3,7 +3,13 @@
 #include "sgp4wrapper.h"
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
+#include <QStandardPaths>
 
 SatelliteTracker::SatelliteTracker(QObject *parent)
     : QObject(parent)
@@ -14,6 +20,12 @@ SatelliteTracker::SatelliteTracker(QObject *parent)
     
     // Set network timeout
     m_networkManager->setTransferTimeout(10000); // 10 seconds
+    
+    // Load cached SatNOGS transmitter data so frequencies are available offline
+    QFile cache(transmitterCachePath());
+    if (cache.open(QIODevice::ReadOnly)) {
+        loadTransmitterData(cache.readAll());
+    }
 }
 
 SatelliteTracker::~SatelliteTracker() {
@@ -153,6 +165,79 @@ void SatelliteTracker::fetchTLEData(const QString& tleUrl) {
     QNetworkRequest request{QUrl(tleUrl)};
     QNetworkReply* reply = m_networkManager->get(request);
     connect(reply, &QNetworkReply::finished, this, &SatelliteTracker::onTLEReplyFinished);
+    
+    // Refresh radio frequencies alongside the orbital elements
+    fetchTransmitterData();
+}
+
+void SatelliteTracker::fetchTransmitterData(const QString& url) {
+    QNetworkRequest request{QUrl(url)};
+    request.setHeader(QNetworkRequest::UserAgentHeader, "SatelliteTracker/1.0");
+    request.setTransferTimeout(60000); // ~2 MB download, allow more than the default
+    QNetworkReply* reply = m_networkManager->get(request);
+    
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray data = reply->readAll();
+            if (loadTransmitterData(data)) {
+                QDir().mkpath(QFileInfo(transmitterCachePath()).absolutePath());
+                QSaveFile cache(transmitterCachePath());
+                if (cache.open(QIODevice::WriteOnly)) {
+                    cache.write(data);
+                    cache.commit();
+                }
+                for (Satellite& sat : m_satellites) {
+                    applyTransponders(sat);
+                }
+                emit positionsUpdated();
+            } else {
+                emit errorOccurred("Invalid transmitter data from SatNOGS");
+            }
+        } else {
+            emit errorOccurred("Failed to fetch SatNOGS transmitter data: " + reply->errorString());
+        }
+        reply->deleteLater();
+    });
+}
+
+bool SatelliteTracker::loadTransmitterData(const QByteArray& data) {
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (!doc.isArray()) return false;
+    
+    QHash<int, QList<Transponder>> byCatalog;
+    for (const QJsonValue& v : doc.array()) {
+        QJsonObject t = v.toObject();
+        if (!t["alive"].toBool() || t["status"].toString() != "active") continue;
+        
+        int catalogNumber = t["norad_cat_id"].toInt();
+        // SatNOGS frequencies are in Hz; null means none
+        double uplink = t["uplink_low"].toDouble() / 1e6;
+        double downlink = t["downlink_low"].toDouble() / 1e6;
+        if (catalogNumber <= 0 || (uplink <= 0 && downlink <= 0)) continue;
+        
+        byCatalog[catalogNumber].append(Transponder(t["description"].toString(),
+                                                    uplink, downlink,
+                                                    t["mode"].toString(),
+                                                    t["invert"].toBool()));
+    }
+    
+    m_satnogsTransponders = byCatalog;
+    return true;
+}
+
+QString SatelliteTracker::transmitterCachePath() const {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + "/satnogs_transmitters.json";
+}
+
+void SatelliteTracker::applyTransponders(Satellite& sat) const {
+    auto it = m_satnogsTransponders.constFind(sat.catalogNumber);
+    if (it != m_satnogsTransponders.constEnd()) {
+        sat.transponders = it.value();
+    } else {
+        sat.transponders.clear();
+        populateTransponders(sat);
+    }
 }
 
 void SatelliteTracker::onTLEReplyFinished() {
@@ -163,9 +248,9 @@ void SatelliteTracker::onTLEReplyFinished() {
         QString tleData = QString::fromUtf8(reply->readAll());
         m_satellites = TLEParser::parseTLEData(tleData);
         
-        // Populate transponder frequencies for known satellites
+        // Populate transponder frequencies (SatNOGS, else built-in table)
         for (Satellite& sat : m_satellites) {
-            populateTransponders(sat);
+            applyTransponders(sat);
         }
         
         emit tleDataUpdated(m_satellites.size());

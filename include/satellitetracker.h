@@ -6,6 +6,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QTimer>
+#include <QHash>
 #include "satellite.h"
 
 class SatelliteTracker : public QObject {
@@ -30,6 +31,12 @@ public:
     // Fetch TLE data from CelesTrak
     void fetchTLEData(const QString& tleUrl = "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle");
     
+    // Fetch radio transmitter data from the SatNOGS DB (cached on disk)
+    void fetchTransmitterData(const QString& url = "https://db.satnogs.org/api/transmitters/?format=json");
+    
+    // Number of satellites with SatNOGS transmitter data loaded
+    int transmitterSatelliteCount() const { return m_satnogsTransponders.size(); }
+    
     // Update satellite positions
     void updatePositions();
     
@@ -42,7 +49,7 @@ public:
     // Get all satellites
     QList<Satellite> getAllSatellites() const { return m_satellites; }
     
-    // Populate transponder frequencies for known satellites
+    // Built-in transponder table for well-known satellites (fallback when SatNOGS has no entry)
     static void populateTransponders(Satellite& sat);
     
     // Calculate ground track for a satellite (future positions)
@@ -66,7 +73,12 @@ private:
     QDateTime m_positionsTime;
     QNetworkAccessManager* m_networkManager;
     
+    QHash<int, QList<Transponder>> m_satnogsTransponders;  // keyed by NORAD catalog number
+    
     void parseLocationData(const QByteArray& data);
+    bool loadTransmitterData(const QByteArray& data);
+    QString transmitterCachePath() const;
+    void applyTransponders(Satellite& sat) const;
 };
 
 #endif // SATELLITETRACKER_H
