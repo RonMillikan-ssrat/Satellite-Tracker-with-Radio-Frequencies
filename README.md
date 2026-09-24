@@ -1,5 +1,8 @@
 # Satellite Tracker
 
+<img width="958" height="738" alt="image" src="https://github.com/user-attachments/assets/e4f72f50-74a9-44a0-9e86-b0984b589cb8" />
+
+
 A C++ GUI application for tracking satellites in real-time, showing which satellites are currently visible from your location.
 Valid radio frequencies provided, per satellite, when available.
 
