@@ -15,6 +15,11 @@ public:
     void setSatellites(const QList<Satellite>& satellites);
     void setSelectedSatellite(const QString& satelliteName);
     QString getSelectedSatellite() const { return m_selectedSatellite; }
+
+    // Draw one predicted pass (x = azimuth, y = elevation) with rise, peak and
+    // set markers. An empty track clears it.
+    void setPassTrack(const QList<QPointF>& track, const QString& riseLabel, const QString& setLabel);
+    void setLegendVisible(bool visible) { m_legendVisible = visible; update(); }
     
 signals:
     void satelliteClicked(const QString& satelliteName);
@@ -29,6 +34,10 @@ private:
     QList<Satellite> m_satellites;
     QString m_selectedSatellite;
     QString m_hoveredSatellite;
+    QList<QPointF> m_passTrack;
+    QString m_passRiseLabel;
+    QString m_passSetLabel;
+    bool m_legendVisible = true;
     
     // Convert azimuth/elevation to widget coordinates (polar projection)
     QPointF azElToPoint(double azimuth, double elevation) const;
@@ -45,6 +54,9 @@ private:
     // Draw ground tracks
     void drawGroundTracks(QPainter& painter);
     
+    // Draw the predicted pass set with setPassTrack()
+    void drawPassTrack(QPainter& painter);
+
     // Draw legend
     void drawLegend(QPainter& painter);
     

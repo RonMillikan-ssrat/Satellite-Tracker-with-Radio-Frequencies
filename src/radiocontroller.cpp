@@ -14,12 +14,16 @@ RadioController::RadioController(SatelliteTracker* tracker, QObject *parent)
     , m_tracker(tracker)
     , m_socket(new QTcpSocket(this))
     , m_timer(new QTimer(this))
+    , m_armTimer(new QTimer(this))
 {
     m_status.host = "127.0.0.1";
     m_status.port = 7356;
 
     m_timer->setInterval(kTrackIntervalMs);
     connect(m_timer, &QTimer::timeout, this, &RadioController::onTick);
+    // Polled rather than a single long timer so it stays right across suspend
+    m_armTimer->setInterval(1000);
+    connect(m_armTimer, &QTimer::timeout, this, &RadioController::onArmTick);
     connect(m_socket, &QTcpSocket::connected, this, &RadioController::onConnected);
     connect(m_socket, &QTcpSocket::disconnected, this, &RadioController::onDisconnected);
     connect(m_socket, &QTcpSocket::errorOccurred, this, &RadioController::onSocketError);
@@ -59,7 +63,7 @@ int RadioController::defaultTransponder(const Satellite& sat) const {
     return -1;
 }
 
-QString RadioController::startTracking(const Satellite& sat, int transponderIndex) {
+QString RadioController::checkTunable(const Satellite& sat, int transponderIndex) const {
     if (transponderIndex < 0 || transponderIndex >= sat.transponders.size()) {
         return QString("%1 has no transponder #%2").arg(sat.name).arg(transponderIndex);
     }
@@ -71,6 +75,13 @@ QString RadioController::startTracking(const Satellite& sat, int transponderInde
         return QString("%1 MHz is outside the receiver's %2-%3 MHz range")
             .arg(t.downlinkFreq, 0, 'f', 3).arg(m_minMHz).arg(m_maxMHz);
     }
+    return QString();
+}
+
+QString RadioController::startTracking(const Satellite& sat, int transponderIndex) {
+    QString failure = checkTunable(sat, transponderIndex);
+    if (!failure.isEmpty()) return failure;
+    const Transponder& t = sat.transponders[transponderIndex];
 
     m_satellite = sat;
     m_status.tracking = true;
@@ -96,10 +107,56 @@ QString RadioController::startTracking(const Satellite& sat, int transponderInde
 }
 
 void RadioController::stopTracking() {
+    if (m_status.armed) disarm();
     if (!m_status.tracking) return;
     m_timer->stop();
     m_status.tracking = false;
     setMessage("Tracking stopped");
+}
+
+QString RadioController::armForPass(const Satellite& sat, int transponderIndex, const QDateTime& aosUtc) {
+    QString failure = checkTunable(sat, transponderIndex);
+    if (!failure.isEmpty()) return failure;
+
+    m_armedSatellite = sat;
+    m_status.armed = true;
+    m_status.armedSatelliteName = sat.name;
+    m_status.armedCatalogNumber = sat.catalogNumber;
+    m_status.armedTransponderIndex = transponderIndex;
+    m_status.armedAosUtc = aosUtc.toUTC();
+    m_armTimer->start();
+    setMessage(QString("Armed for %1 pass at %2")
+                   .arg(sat.name, aosUtc.toLocalTime().toString("ddd h:mm AP")));
+    onArmTick();
+    return QString();
+}
+
+void RadioController::disarm() {
+    if (!m_status.armed) return;
+    m_armTimer->stop();
+    m_status.armed = false;
+    m_status.armedSatelliteName.clear();
+    m_status.armedCatalogNumber = 0;
+    m_status.armedTransponderIndex = -1;
+    m_status.armedAosUtc = QDateTime();
+    setMessage("Pass disarmed");
+}
+
+void RadioController::onArmTick() {
+    if (!m_status.armed) return;
+    if (QDateTime::currentDateTimeUtc().secsTo(m_status.armedAosUtc) > kPreTuneSeconds) return;
+
+    Satellite sat = m_armedSatellite;
+    int index = m_status.armedTransponderIndex;
+    m_armTimer->stop();
+    m_status.armed = false;
+    m_status.armedSatelliteName.clear();
+    m_status.armedCatalogNumber = 0;
+    m_status.armedTransponderIndex = -1;
+    m_status.armedAosUtc = QDateTime();
+
+    QString failure = startTracking(sat, index);
+    if (!failure.isEmpty()) setMessage("Armed pass could not start: " + failure);
 }
 
 bool RadioController::rigctlMode(const QString& transponderMode, QString* mode, int* passbandHz) {

@@ -16,10 +16,11 @@ Valid radio frequencies provided, per satellite, when available.
 - **Manual location** - Set custom observer coordinates
 - **TLE data fetching** - Downloads latest satellite orbital data from CelesTrak
 - **SDR radio control** - Tunes Gqrx / SDR++ / rigctld to a satellite downlink with live Doppler correction
+- **Pass prediction** - Upcoming passes for every satellite, per-satellite lookup with a sky-map plot, and "Tune at AOS"
 
 ## Requirements
 
-- Qt 6.x (Core, Widgets, Network)
+- Qt 6.x (Core, Widgets, Network, Concurrent)
 - CMake 3.16+
 - C++17 compiler (GCC, Clang, or MSVC)
 
@@ -94,6 +95,29 @@ cmake --build . --config Release
 - **SGP4Wrapper** - SGP4/SDP4 orbital propagation (via libsgp4)
 - **TLEParser** - Parse Two-Line Element sets
 - **RadioController** - Doppler-corrected tuning over the rigctl protocol
+- **PassPredictor** - Rise / peak / set prediction (SGP4, refined to the second)
+- **PassesTab / SatelliteTab** - Upcoming Passes and Satellite lookup tabs
+
+## Tabs and Pass Prediction
+
+The location and Radio panels stay at the top; below them are three tabs:
+
+- **Live** - the sky map and table of satellites above the horizon right now.
+- **Upcoming Passes** - every satellite's passes over the next 24 h (1-168 h),
+  sorted by rise time: rise, maximum elevation, peak and set times (local),
+  duration, direction (e.g. NW → NE → SE), main receivable downlink and a live
+  countdown. Passes in progress are highlighted. Filters: minimum elevation
+  (default 10°; low passes are hard to receive) and "Only satellites I can
+  receive" (a downlink inside the SDR's tuning range). Double-click a pass to
+  open it in the Satellite tab.
+- **Satellite** - search by name or NORAD number (with autocomplete) to see the
+  orbit, TLE age, current position, downlinks and the next 72 h of passes. The
+  selected pass is drawn on a sky map with rise, peak and set marked.
+  **Tune at AOS** arms the radio to start Doppler tracking 2 minutes before the
+  pass rises, using the transponder chosen in the Radio panel; **Stop** cancels it.
+
+Passes are found by sampling elevation every 20 s and refining rise/set to the
+second; a pass already in progress is traced back to its real rise time.
 
 ## SDR Radio Control
 
@@ -167,17 +191,18 @@ While running, the app serves a read/write JSON API on `http://127.0.0.1:8765`
 | GET  | `/satellites/visible` | Satellites above the horizon |
 | GET  | `/satellites/{id}` | One satellite by NORAD catalog number or exact name |
 | POST | `/tle/refresh` | Re-download TLE data (optional `{"url": "..."}`) |
+| GET  | `/passes` | Predicted passes, sorted by rise (`?hours=24&minElevation=10&satellite=ISS&receivableOnly=true`) |
 | GET  | `/radio` | Radio link status, tuned frequency, Doppler and manual offset (Hz) |
 | POST | `/radio/connect` | Connect to rigctl (optional `{"host": "127.0.0.1", "port": 7356}`) |
-| POST | `/radio/tune` | Doppler-track a downlink: `{"satellite": "ISS (ZARYA)", "transponder": 0}` (`transponder` is optional) |
-| POST | `/radio/stop` | Stop tracking (radio stays on its last frequency) |
+| POST | `/radio/tune` | Doppler-track a downlink: `{"satellite": "ISS (ZARYA)", "transponder": 0}` (`transponder` is optional; add `"startAt": "<aosUtc>"` to arm for a pass instead) |
+| POST | `/radio/stop` | Stop tracking and cancel any armed pass (radio stays on its last frequency) |
 
 ### MCP server
 
 `mcp_server/satellite_tracker_mcp.py` wraps this API as MCP tools
 (`get_status`, `get_observer_location`, `set_observer_location`,
 `get_visible_satellites`, `list_all_satellites`, `get_satellite`, `refresh_tle_data`,
-`get_radio_status`, `connect_radio`, `tune_radio`, `stop_radio`).
+`get_passes`, `get_radio_status`, `connect_radio`, `tune_radio`, `stop_radio`).
 The Qt app must be running for the tools to return data.
 
 ```bash
@@ -232,7 +257,7 @@ m_updateTimer->start(2000);
 ## Future Enhancements
 
 - [x] Integrate full SGP4 library for accurate propagation
-- [ ] Add satellite pass predictions
+- [x] Add satellite pass predictions
 - [ ] Show satellite ground tracks on a map
 - [x] Add Doppler shift calculations for radio frequencies
 - [x] Control an SDR via rigctl (Gqrx, SDR++, rigctld)

@@ -9,29 +9,15 @@
 #include <QLineEdit>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QVBoxLayout>
 #include "satellitetracker.h"
 #include "skymapwidget.h"
 #include "apiserver.h"
 #include "radiocontroller.h"
-
-// Custom table item that sorts by numeric value instead of text
-class NumericTableItem : public QTableWidgetItem {
-public:
-    NumericTableItem(double value, const QString& displayText)
-        : QTableWidgetItem(displayText), m_numericValue(value) {}
-    
-    bool operator<(const QTableWidgetItem& other) const override {
-        const NumericTableItem* numericOther = dynamic_cast<const NumericTableItem*>(&other);
-        if (numericOther) {
-            return m_numericValue < numericOther->m_numericValue;
-        }
-        return QTableWidgetItem::operator<(other);
-    }
-    
-private:
-    double m_numericValue;
-};
+#include "numerictableitem.h"
+#include "passestab.h"
+#include "satellitetab.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -55,6 +41,8 @@ private slots:
     void onRadioConnectClicked();
     void onRadioTuneClicked();
     void onRadioStatusChanged();
+    void onPassActivated(const SatellitePass& pass);
+    void onArmRequested(const QString& satelliteName, const QDateTime& aosUtc);
     
 private:
     // GUI components
@@ -67,6 +55,9 @@ private:
     QLineEdit* m_latEdit;
     QLineEdit* m_lonEdit;
     QLineEdit* m_altEdit;
+    QTabWidget* m_tabs;
+    PassesTab* m_passesTab;
+    SatelliteTab* m_satelliteTab;
 
     // Radio (rigctl) controls
     QLineEdit* m_radioHostEdit;

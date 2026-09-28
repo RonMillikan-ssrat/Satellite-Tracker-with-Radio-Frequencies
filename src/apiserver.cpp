@@ -197,6 +197,11 @@ ApiServer::Response ApiServer::handleRequest(const QString& method, const QUrl& 
         return r;
     }
 
+    if (path == "/passes") {
+        if (method != "GET") return error(405, "Use GET");
+        return handlePassesRequest(query);
+    }
+
     if (path == "/radio" || path.startsWith("/radio/")) {
         return handleRadioRequest(method, path, body);
     }
@@ -255,7 +260,14 @@ ApiServer::Response ApiServer::handleRadioRequest(const QString& method, const Q
         if (index < 0 && !obj.contains("transponder")) {
             return error(400, sat.name + " has no downlink the receiver can tune");
         }
-        QString failure = m_radio->startTracking(sat, index);
+        QString failure;
+        if (obj.contains("startAt")) {
+            QDateTime startAt = QDateTime::fromString(obj["startAt"].toString(), Qt::ISODateWithMs);
+            if (!startAt.isValid()) return error(400, "startAt must be an ISO 8601 time, e.g. a pass's aosUtc");
+            failure = m_radio->armForPass(sat, index, startAt);
+        } else {
+            failure = m_radio->startTracking(sat, index);
+        }
         if (!failure.isEmpty()) return error(400, failure);
         r.body = QJsonDocument(radioStatusToJson(m_radio->status()));
         return r;
@@ -270,6 +282,77 @@ ApiServer::Response ApiServer::handleRadioRequest(const QString& method, const Q
     return error(404, "Unknown endpoint: " + path);
 }
 
+ApiServer::Response ApiServer::handlePassesRequest(const QUrlQuery& query) {
+    bool ok = true;
+    double hours = query.hasQueryItem("hours") ? query.queryItemValue("hours").toDouble(&ok) : 24.0;
+    if (!ok || hours <= 0 || hours > 168) return error(400, "hours must be in (0, 168]");
+    double minElevation = query.hasQueryItem("minElevation")
+        ? query.queryItemValue("minElevation").toDouble(&ok) : 10.0;
+    if (!ok || minElevation < 0 || minElevation > 90) return error(400, "minElevation must be in [0, 90]");
+    bool receivableOnly = query.queryItemValue("receivableOnly") == "true";
+
+    QList<Satellite> satellites;
+    QString id = query.queryItemValue("satellite", QUrl::FullyDecoded);
+    if (!id.isEmpty()) {
+        Satellite sat;
+        if (!findSatellite(id, &sat)) return error(404, "Satellite not found: " + id);
+        satellites.append(sat);
+    } else {
+        satellites = m_tracker->getAllSatellites();
+    }
+
+    QHash<int, Satellite> byCatalog;
+    for (const Satellite& sat : satellites) byCatalog.insert(sat.catalogNumber, sat);
+
+    QDateTime now = QDateTime::currentDateTimeUtc();
+    QJsonArray arr;
+    for (const SatellitePass& pass : PassPredictor::predictAll(satellites, m_tracker->getObserverLocation(),
+                                                               now, hours, minElevation)) {
+        const Satellite& sat = byCatalog[pass.catalogNumber];
+        int index = m_radio->defaultTransponder(sat);
+        if (receivableOnly && index < 0) continue;
+
+        QJsonObject obj{
+            {"satellite", pass.satelliteName},
+            {"catalogNumber", pass.catalogNumber},
+            {"aosUtc", pass.aos.toString(Qt::ISODate)},
+            {"tcaUtc", pass.tca.toString(Qt::ISODate)},
+            {"losUtc", pass.los.toString(Qt::ISODate)},
+            {"aosLocal", pass.aos.toLocalTime().toString(Qt::ISODate)},
+            {"maxElevation", pass.maxElevation},
+            {"aosAzimuth", pass.aosAzimuth},
+            {"tcaAzimuth", pass.tcaAzimuth},
+            {"losAzimuth", pass.losAzimuth},
+            {"direction", PassPredictor::directionText(pass)},
+            {"durationSeconds", pass.durationSeconds()},
+            {"inProgress", pass.isInProgress(now)},
+            {"aosBeforeSearch", pass.aosBeforeSearch},
+            {"losAfterSearch", pass.losAfterSearch}
+        };
+        if (index >= 0) {
+            const Transponder& t = sat.transponders[index];
+            obj["downlink"] = QJsonObject{
+                {"transponderIndex", index},
+                {"name", t.name},
+                {"downlinkMHz", t.downlinkFreq},
+                {"mode", t.mode}
+            };
+        }
+        arr.append(obj);
+    }
+
+    Response r;
+    r.body = QJsonDocument(QJsonObject{
+        {"timeUtc", now.toString(Qt::ISODate)},
+        {"observer", observerToJson(m_tracker->getObserverLocation())},
+        {"hours", hours},
+        {"minElevation", minElevation},
+        {"count", arr.size()},
+        {"passes", arr}
+    });
+    return r;
+}
+
 QJsonObject ApiServer::radioStatusToJson(const RadioController::Status& s) {
     QJsonObject obj{
         {"connected", s.connected},
@@ -278,6 +361,15 @@ QJsonObject ApiServer::radioStatusToJson(const RadioController::Status& s) {
         {"port", s.port},
         {"message", s.message}
     };
+    if (s.armed) {
+        obj["armed"] = QJsonObject{
+            {"satellite", s.armedSatelliteName},
+            {"catalogNumber", s.armedCatalogNumber},
+            {"transponderIndex", s.armedTransponderIndex},
+            {"aosUtc", s.armedAosUtc.toString(Qt::ISODate)},
+            {"tuneAtUtc", s.armedAosUtc.addSecs(-RadioController::kPreTuneSeconds).toString(Qt::ISODate)}
+        };
+    }
     if (s.tracking || s.tunedHz > 0) {
         obj["satellite"] = s.satelliteName;
         obj["catalogNumber"] = s.catalogNumber;

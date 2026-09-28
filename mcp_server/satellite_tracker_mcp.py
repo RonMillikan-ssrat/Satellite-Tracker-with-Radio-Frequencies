@@ -112,6 +112,29 @@ def refresh_tle_data(url: str | None = None) -> dict:
 
 
 @mcp.tool()
+def get_passes(
+    hours: float = 24,
+    min_elevation: float = 10,
+    satellite: str | None = None,
+    receivable_only: bool = False,
+) -> dict:
+    """Predict upcoming passes over the observer, sorted by rise time.
+
+    Each pass has rise/peak/set times (aosUtc/tcaUtc/losUtc, plus aosLocal),
+    maximum elevation (degrees), compass direction, duration and the
+    satellite's main receivable downlink. Filter to one satellite by name or
+    NORAD number; receivable_only drops satellites the SDR can't tune.
+    Higher passes (e.g. above 30 degrees) are much easier to receive.
+    """
+    params = {"hours": hours, "minElevation": min_elevation}
+    if satellite:
+        params["satellite"] = satellite
+    if receivable_only:
+        params["receivableOnly"] = "true"
+    return _request("GET", "/passes?" + urllib.parse.urlencode(params))
+
+
+@mcp.tool()
 def get_radio_status() -> dict:
     """Get the SDR radio link status: whether the tracker is connected to the
     rigctl server (Gqrx/SDR++/rigctld), which satellite and transponder it is
@@ -132,22 +155,32 @@ def connect_radio(host: str | None = None, port: int | None = None) -> dict:
 
 
 @mcp.tool()
-def tune_radio(name_or_catalog_number: str, transponder_index: int | None = None) -> dict:
+def tune_radio(
+    name_or_catalog_number: str,
+    transponder_index: int | None = None,
+    start_at_utc: str | None = None,
+) -> dict:
     """Tune the SDR to a satellite downlink and keep it Doppler-corrected.
 
     transponder_index selects an entry from the satellite's transponder list
     (see get_satellite); by default the first downlink the receiver can tune
     is used. Tracking continues through the pass until stop_radio is called.
+
+    To arm for a future pass instead of tuning now, pass that pass's aosUtc
+    (from get_passes) as start_at_utc; tracking then starts 2 minutes before
+    the satellite rises.
     """
     body: dict = {"satellite": name_or_catalog_number}
     if transponder_index is not None:
         body["transponder"] = transponder_index
+    if start_at_utc:
+        body["startAt"] = start_at_utc
     return _request("POST", "/radio/tune", body)
 
 
 @mcp.tool()
 def stop_radio() -> dict:
-    """Stop Doppler tracking; the radio stays on its last frequency."""
+    """Stop Doppler tracking and cancel any armed pass; the radio stays on its last frequency."""
     return _request("POST", "/radio/stop", {})
 
 

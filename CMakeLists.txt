@@ -19,7 +19,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Find Qt6
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Concurrent)
 
 # Vendored SGP4 library (https://github.com/dnwrnr/sgp4)
 file(GLOB SGP4_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/external/sgp4/libsgp4/*.cc)
@@ -43,6 +43,9 @@ set(SOURCES
     src/tleparser.cpp
     src/apiserver.cpp
     src/radiocontroller.cpp
+    src/passpredictor.cpp
+    src/passestab.cpp
+    src/satellitetab.cpp
 )
 
 set(HEADERS
@@ -54,6 +57,10 @@ set(HEADERS
     include/satellite.h
     include/apiserver.h
     include/radiocontroller.h
+    include/passpredictor.h
+    include/passestab.h
+    include/satellitetab.h
+    include/numerictableitem.h
 )
 
 # Add executable
@@ -64,6 +71,7 @@ target_link_libraries(${PROJECT_NAME}
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
     sgp4
 )
 
