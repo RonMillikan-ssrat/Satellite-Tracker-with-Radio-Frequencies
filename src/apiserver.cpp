@@ -20,10 +20,11 @@ QString reasonPhrase(int status) {
 }
 }
 
-ApiServer::ApiServer(SatelliteTracker* tracker, QObject *parent)
+ApiServer::ApiServer(SatelliteTracker* tracker, RadioController* radio, QObject *parent)
     : QObject(parent)
     , m_server(new QTcpServer(this))
     , m_tracker(tracker)
+    , m_radio(radio)
 {
     connect(m_server, &QTcpServer::newConnection, this, &ApiServer::onNewConnection);
 }
@@ -188,21 +189,113 @@ ApiServer::Response ApiServer::handleRequest(const QString& method, const QUrl& 
     if (path.startsWith("/satellites/")) {
         if (method != "GET") return error(405, "Use GET");
         QString id = QUrl::fromPercentEncoding(path.mid(12).toUtf8());
-        bool isNumber = false;
-        int catalog = id.toInt(&isNumber);
-        for (const Satellite& sat : m_tracker->getAllSatellites()) {
-            if ((isNumber && sat.catalogNumber == catalog) ||
-                sat.name.compare(id, Qt::CaseInsensitive) == 0) {
-                QJsonObject obj = satelliteToJson(sat, true);
-                obj["timeUtc"] = m_tracker->getPositionsTime().toString(Qt::ISODateWithMs);
-                r.body = QJsonDocument(obj);
-                return r;
-            }
-        }
-        return error(404, "Satellite not found: " + id);
+        Satellite sat;
+        if (!findSatellite(id, &sat)) return error(404, "Satellite not found: " + id);
+        QJsonObject obj = satelliteToJson(sat, true);
+        obj["timeUtc"] = m_tracker->getPositionsTime().toString(Qt::ISODateWithMs);
+        r.body = QJsonDocument(obj);
+        return r;
+    }
+
+    if (path == "/radio" || path.startsWith("/radio/")) {
+        return handleRadioRequest(method, path, body);
     }
 
     return error(404, "Unknown endpoint: " + path);
+}
+
+bool ApiServer::findSatellite(const QString& id, Satellite* out) const {
+    bool isNumber = false;
+    int catalog = id.toInt(&isNumber);
+    for (const Satellite& sat : m_tracker->getAllSatellites()) {
+        if ((isNumber && sat.catalogNumber == catalog) ||
+            sat.name.compare(id, Qt::CaseInsensitive) == 0) {
+            *out = sat;
+            return true;
+        }
+    }
+    return false;
+}
+
+ApiServer::Response ApiServer::handleRadioRequest(const QString& method, const QString& path, const QByteArray& body) {
+    Response r;
+
+    if (path == "/radio") {
+        if (method != "GET") return error(405, "Use GET");
+        r.body = QJsonDocument(radioStatusToJson(m_radio->status()));
+        return r;
+    }
+
+    if (method != "POST") return error(405, "Use POST");
+    QJsonParseError parseError;
+    QJsonObject obj = QJsonDocument::fromJson(body, &parseError).object();
+    if (!body.trimmed().isEmpty() && parseError.error != QJsonParseError::NoError) {
+        return error(400, "Invalid JSON: " + parseError.errorString());
+    }
+
+    if (path == "/radio/connect") {
+        RadioController::Status s = m_radio->status();
+        int port = obj["port"].toInt(s.port);
+        if (port <= 0 || port > 65535) return error(400, "port must be in [1, 65535]");
+        m_radio->setServer(obj["host"].toString(s.host), quint16(port));
+        m_radio->connectToRadio();
+        r.status = 202;
+        r.body = QJsonDocument(radioStatusToJson(m_radio->status()));
+        return r;
+    }
+
+    if (path == "/radio/tune") {
+        QString id = obj["satellite"].isDouble() ? QString::number(obj["satellite"].toInt())
+                                                 : obj["satellite"].toString();
+        if (id.isEmpty()) return error(400, "satellite (name or catalog number) is required");
+        Satellite sat;
+        if (!findSatellite(id, &sat)) return error(404, "Satellite not found: " + id);
+        int index = obj.contains("transponder") ? obj["transponder"].toInt(-1)
+                                                : m_radio->defaultTransponder(sat);
+        if (index < 0 && !obj.contains("transponder")) {
+            return error(400, sat.name + " has no downlink the receiver can tune");
+        }
+        QString failure = m_radio->startTracking(sat, index);
+        if (!failure.isEmpty()) return error(400, failure);
+        r.body = QJsonDocument(radioStatusToJson(m_radio->status()));
+        return r;
+    }
+
+    if (path == "/radio/stop") {
+        m_radio->stopTracking();
+        r.body = QJsonDocument(radioStatusToJson(m_radio->status()));
+        return r;
+    }
+
+    return error(404, "Unknown endpoint: " + path);
+}
+
+QJsonObject ApiServer::radioStatusToJson(const RadioController::Status& s) {
+    QJsonObject obj{
+        {"connected", s.connected},
+        {"tracking", s.tracking},
+        {"host", s.host},
+        {"port", s.port},
+        {"message", s.message}
+    };
+    if (s.tracking || s.tunedHz > 0) {
+        obj["satellite"] = s.satelliteName;
+        obj["catalogNumber"] = s.catalogNumber;
+        obj["transponderIndex"] = s.transponderIndex;
+        obj["transponder"] = QJsonObject{
+            {"name", s.transponder.name},
+            {"downlinkMHz", s.transponder.downlinkFreq},
+            {"mode", s.transponder.mode}
+        };
+        obj["rigMode"] = s.rigMode;
+        obj["elevation"] = s.elevation;
+        obj["rangeRateKmPerSec"] = s.rangeRate;
+        obj["nominalHz"] = double(s.nominalHz);
+        obj["dopplerHz"] = double(s.dopplerHz);
+        obj["manualOffsetHz"] = double(s.offsetHz);
+        obj["tunedHz"] = double(s.tunedHz);
+    }
+    return obj;
 }
 
 QJsonObject ApiServer::observerToJson(const ObserverLocation& observer) {
