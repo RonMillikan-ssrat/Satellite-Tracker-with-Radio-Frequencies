@@ -38,6 +38,13 @@ public:
         qint64 offsetHz = 0;      // manual offset picked up from the radio
         qint64 tunedHz = 0;       // last frequency sent to the radio
         QString message;          // last error or informational message
+
+        // Armed to start tracking automatically just before a pass rises
+        bool armed = false;
+        QString armedSatelliteName;
+        int armedCatalogNumber = 0;
+        int armedTransponderIndex = -1;
+        QDateTime armedAosUtc;
     };
 
     explicit RadioController(SatelliteTracker* tracker, QObject *parent = nullptr);
@@ -50,7 +57,14 @@ public:
     // Start Doppler tracking of one transponder's downlink. Returns an empty
     // string on success, otherwise the reason it cannot be tuned.
     QString startTracking(const Satellite& sat, int transponderIndex);
+    // Stops tracking and cancels any armed pass.
     void stopTracking();
+
+    // Start tracking automatically kPreTuneSeconds before aosUtc (or now, if
+    // that is already past). Returns an empty string on success.
+    QString armForPass(const Satellite& sat, int transponderIndex, const QDateTime& aosUtc);
+    void disarm();
+    static const int kPreTuneSeconds = 120;
 
     Status status() const { return m_status; }
     bool isTracking() const { return m_status.tracking; }
@@ -79,6 +93,7 @@ signals:
 
 private slots:
     void onTick();
+    void onArmTick();
     void onConnected();
     void onDisconnected();
     void onSocketError(QAbstractSocket::SocketError error);
@@ -90,8 +105,10 @@ private:
     SatelliteTracker* m_tracker;
     QTcpSocket* m_socket;
     QTimer* m_timer;
+    QTimer* m_armTimer;
     Status m_status;
     Satellite m_satellite;
+    Satellite m_armedSatellite;
     double m_minMHz = 0.1;
     double m_maxMHz = 1750.0;
 
@@ -101,6 +118,7 @@ private:
     QDateTime m_lastConnectAttempt;
     bool m_needMode = false;
 
+    QString checkTunable(const Satellite& sat, int transponderIndex) const;
     void send(const QByteArray& command, Pending kind);
     void applyFrequency(qint64 radioHz);
     void setMessage(const QString& message);

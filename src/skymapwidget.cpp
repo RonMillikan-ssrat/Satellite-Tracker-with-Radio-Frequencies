@@ -30,6 +30,13 @@ void SkyMapWidget::setSelectedSatellite(const QString& satelliteName) {
     }
 }
 
+void SkyMapWidget::setPassTrack(const QList<QPointF>& track, const QString& riseLabel, const QString& setLabel) {
+    m_passTrack = track;
+    m_passRiseLabel = riseLabel;
+    m_passSetLabel = setLabel;
+    update();
+}
+
 void SkyMapWidget::paintEvent(QPaintEvent *event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -41,8 +48,9 @@ void SkyMapWidget::paintEvent(QPaintEvent *event) {
     drawElevationCircles(painter);
     drawCompass(painter);
     drawGroundTracks(painter);  // Draw tracks before satellites
+    drawPassTrack(painter);
     drawSatellites(painter);
-    drawLegend(painter);        // Draw legend last
+    if (m_legendVisible) drawLegend(painter);  // Draw legend last
 }
 
 void SkyMapWidget::resizeEvent(QResizeEvent *event) {
@@ -244,6 +252,44 @@ void SkyMapWidget::drawGroundTracks(QPainter& painter) {
             }
         }
     }
+}
+
+void SkyMapWidget::drawPassTrack(QPainter& painter) {
+    if (m_passTrack.size() < 2) return;
+
+    painter.save();
+    QPainterPath path;
+    int peak = 0;
+    for (int i = 0; i < m_passTrack.size(); ++i) {
+        QPointF point = azElToPoint(m_passTrack[i].x(), m_passTrack[i].y());
+        if (i == 0) path.moveTo(point); else path.lineTo(point);
+        if (m_passTrack[i].y() > m_passTrack[peak].y()) peak = i;
+    }
+    painter.setPen(QPen(QColor(255, 210, 60), 3));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(path);
+
+    // Labels go on the side of the marker facing the zenith, clear of the
+    // compass labels outside the horizon circle
+    QPointF center(width() / 2.0, height() / 2.0);
+    painter.setFont(QFont("Arial", 9, QFont::Bold));
+    QFontMetrics metrics(painter.font());
+    auto marker = [&](const QPointF& azEl, const QColor& color, const QString& label) {
+        QPointF point = azElToPoint(azEl.x(), azEl.y());
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawEllipse(point, 6, 6);
+        painter.setPen(Qt::white);
+        int textWidth = metrics.horizontalAdvance(label);
+        double x = point.x() < center.x() ? point.x() + 10 : point.x() - 10 - textWidth;
+        double y = point.y() < center.y() ? point.y() + metrics.ascent() + 6 : point.y() - 8;
+        painter.drawText(QPointF(x, y), label);
+    };
+    marker(m_passTrack.first(), QColor(80, 220, 120), m_passRiseLabel);
+    marker(m_passTrack.last(), QColor(255, 100, 80), m_passSetLabel);
+    marker(m_passTrack[peak], QColor(255, 210, 60),
+           QString::number(m_passTrack[peak].y(), 'f', 0) + "°");
+    painter.restore();
 }
 
 void SkyMapWidget::drawLegend(QPainter& painter) {

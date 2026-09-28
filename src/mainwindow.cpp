@@ -175,7 +175,15 @@ void MainWindow::setupUI() {
     // Set splitter sizes (45% sky map, 55% table for better table visibility)
     splitter->setSizes({550, 750});
 
-    mainLayout->addWidget(splitter);
+    // Location and radio controls stay above the tabs so the radio can be
+    // watched and stopped from any of them
+    m_tabs = new QTabWidget();
+    m_passesTab = new PassesTab(m_tracker, m_radio);
+    m_satelliteTab = new SatelliteTab(m_tracker, m_radio);
+    m_tabs->addTab(splitter, "Live");
+    m_tabs->addTab(m_passesTab, "Upcoming Passes");
+    m_tabs->addTab(m_satelliteTab, "Satellite");
+    mainLayout->addWidget(m_tabs);
 }
 
 void MainWindow::setupConnections() {
@@ -226,6 +234,14 @@ void MainWindow::setupConnections() {
             m_radio, &RadioController::stopTracking);
     connect(m_radio, &RadioController::statusChanged,
             this, &MainWindow::onRadioStatusChanged);
+
+    // Pass prediction tabs
+    connect(m_passesTab, &PassesTab::passActivated,
+            this, &MainWindow::onPassActivated);
+    connect(m_satelliteTab, &SatelliteTab::satelliteChosen,
+            this, &MainWindow::setRadioSatellite);
+    connect(m_satelliteTab, &SatelliteTab::armRequested,
+            this, &MainWindow::onArmRequested);
 }
 
 void MainWindow::onLocationUpdated(const ObserverLocation& location) {
@@ -576,7 +592,7 @@ void MainWindow::onRadioStatusChanged() {
     m_radioConnectButton->setText(s.connected ? "Disconnect" : "Connect");
     m_radioHostEdit->setEnabled(!s.connected);
     m_radioPortSpin->setEnabled(!s.connected);
-    m_radioStopButton->setEnabled(s.tracking);
+    m_radioStopButton->setEnabled(s.tracking || s.armed);
 
     if (s.tracking && s.connected && s.tunedHz > 0) {
         QString text = QString("%1: %2 MHz (Doppler %3%4 kHz")
@@ -593,5 +609,32 @@ void MainWindow::onRadioStatusChanged() {
     } else {
         m_radioStatusLabel->setText(s.message);
     }
+    if (s.armed) {
+        QString armed = QString("Armed: %1 at %2")
+                            .arg(s.armedSatelliteName,
+                                 s.armedAosUtc.toLocalTime().toString("ddd h:mm AP"));
+        m_radioStatusLabel->setText(s.tracking ? m_radioStatusLabel->text() + "  |  " + armed : armed);
+    }
     m_radioStatusLabel->setToolTip(s.message);
+}
+
+void MainWindow::onPassActivated(const SatellitePass& pass) {
+    m_satelliteTab->showSatellite(pass.catalogNumber, pass.aos);
+    m_tabs->setCurrentWidget(m_satelliteTab);
+}
+
+void MainWindow::onArmRequested(const QString& satelliteName, const QDateTime& aosUtc) {
+    Satellite sat;
+    if (!findSatellite(satelliteName, &sat)) return;
+    setRadioSatellite(satelliteName);
+
+    // Use the transponder chosen in the Radio panel
+    QVariant data = m_transponderCombo->currentData();
+    int index = data.isValid() ? data.toInt() : m_radio->defaultTransponder(sat);
+
+    m_radio->setServer(m_radioHostEdit->text().trimmed(), quint16(m_radioPortSpin->value()));
+    QString failure = m_radio->armForPass(sat, index, aosUtc);
+    if (!failure.isEmpty()) {
+        m_radioStatusLabel->setText(failure);
+    }
 }
