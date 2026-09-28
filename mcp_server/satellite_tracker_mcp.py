@@ -111,5 +111,45 @@ def refresh_tle_data(url: str | None = None) -> dict:
     return _request("POST", "/tle/refresh", {"url": url} if url else {})
 
 
+@mcp.tool()
+def get_radio_status() -> dict:
+    """Get the SDR radio link status: whether the tracker is connected to the
+    rigctl server (Gqrx/SDR++/rigctld), which satellite and transponder it is
+    tracking, and the tuned frequency with Doppler shift and manual offset (Hz)."""
+    return _request("GET", "/radio")
+
+
+@mcp.tool()
+def connect_radio(host: str | None = None, port: int | None = None) -> dict:
+    """Connect to the SDR application's rigctl server. Defaults to the host/port
+    set in the app (Gqrx remote control uses 7356, SDR++ and rigctld use 4532)."""
+    body: dict = {}
+    if host:
+        body["host"] = host
+    if port:
+        body["port"] = port
+    return _request("POST", "/radio/connect", body)
+
+
+@mcp.tool()
+def tune_radio(name_or_catalog_number: str, transponder_index: int | None = None) -> dict:
+    """Tune the SDR to a satellite downlink and keep it Doppler-corrected.
+
+    transponder_index selects an entry from the satellite's transponder list
+    (see get_satellite); by default the first downlink the receiver can tune
+    is used. Tracking continues through the pass until stop_radio is called.
+    """
+    body: dict = {"satellite": name_or_catalog_number}
+    if transponder_index is not None:
+        body["transponder"] = transponder_index
+    return _request("POST", "/radio/tune", body)
+
+
+@mcp.tool()
+def stop_radio() -> dict:
+    """Stop Doppler tracking; the radio stays on its last frequency."""
+    return _request("POST", "/radio/stop", {})
+
+
 if __name__ == "__main__":
     mcp.run()

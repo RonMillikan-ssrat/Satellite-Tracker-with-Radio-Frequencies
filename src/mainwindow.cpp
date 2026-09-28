@@ -3,12 +3,14 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QSplitter>
+#include <QSettings>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_tracker(new SatelliteTracker(this))
     , m_updateTimer(new QTimer(this))
-    , m_apiServer(new ApiServer(m_tracker, this))
+    , m_radio(new RadioController(m_tracker, this))
+    , m_apiServer(new ApiServer(m_tracker, m_radio, this))
 {
     setupUI();
     setupConnections();
@@ -103,6 +105,50 @@ void MainWindow::setupUI() {
 
     mainLayout->addWidget(controlGroup);
 
+    // Radio control: drives Gqrx / SDR++ / rigctld over the rigctl protocol
+    QGroupBox* radioGroup = new QGroupBox("Radio (rigctl)");
+    radioGroup->setMaximumHeight(70);
+    QHBoxLayout* radioLayout = new QHBoxLayout(radioGroup);
+    radioLayout->setSpacing(6);
+    radioLayout->setContentsMargins(6, 6, 6, 6);
+
+    QSettings settings;
+    m_radioHostEdit = new QLineEdit(settings.value("radio/host", "127.0.0.1").toString());
+    m_radioHostEdit->setMaximumWidth(120);
+    m_radioPortSpin = new QSpinBox();
+    m_radioPortSpin->setRange(1, 65535);
+    m_radioPortSpin->setValue(settings.value("radio/port", 7356).toInt());
+    m_radioPortSpin->setToolTip("Gqrx remote control: 7356, SDR++ rigctl server / rigctld: 4532");
+    m_radioConnectButton = new QPushButton("Connect");
+
+    m_radioSatLabel = new QLabel("Select a satellite");
+    m_radioSatLabel->setMinimumWidth(140);
+    m_transponderCombo = new QComboBox();
+    m_transponderCombo->setMinimumWidth(260);
+    m_transponderCombo->setEnabled(false);
+    m_radioTuneButton = new QPushButton("Tune");
+    m_radioTuneButton->setEnabled(false);
+    m_radioTuneButton->setToolTip("Track the selected downlink with Doppler correction (or double-click a table row)");
+    m_radioStopButton = new QPushButton("Stop");
+    m_radioStopButton->setEnabled(false);
+    m_radioStatusLabel = new QLabel("Not connected");
+
+    radioLayout->addWidget(new QLabel("Host:"));
+    radioLayout->addWidget(m_radioHostEdit);
+    radioLayout->addWidget(new QLabel("Port:"));
+    radioLayout->addWidget(m_radioPortSpin);
+    radioLayout->addWidget(m_radioConnectButton);
+    radioLayout->addSpacing(12);
+    radioLayout->addWidget(m_radioSatLabel);
+    radioLayout->addWidget(m_transponderCombo);
+    radioLayout->addWidget(m_radioTuneButton);
+    radioLayout->addWidget(m_radioStopButton);
+    radioLayout->addSpacing(12);
+    radioLayout->addWidget(m_radioStatusLabel, 1);
+
+    m_radio->setServer(m_radioHostEdit->text(), quint16(m_radioPortSpin->value()));
+    mainLayout->addWidget(radioGroup);
+
     // Create splitter for sky map and table
     QSplitter* splitter = new QSplitter(Qt::Horizontal);
 
@@ -168,6 +214,18 @@ void MainWindow::setupConnections() {
     // Connect sky map clicks
     connect(m_skyMap, &SkyMapWidget::satelliteClicked,
             this, &MainWindow::onSkyMapSatelliteClicked);
+
+    // Radio
+    connect(m_satelliteTable, &QTableWidget::cellDoubleClicked,
+            this, &MainWindow::onTableDoubleClicked);
+    connect(m_radioConnectButton, &QPushButton::clicked,
+            this, &MainWindow::onRadioConnectClicked);
+    connect(m_radioTuneButton, &QPushButton::clicked,
+            this, &MainWindow::onRadioTuneClicked);
+    connect(m_radioStopButton, &QPushButton::clicked,
+            m_radio, &RadioController::stopTracking);
+    connect(m_radio, &RadioController::statusChanged,
+            this, &MainWindow::onRadioStatusChanged);
 }
 
 void MainWindow::onLocationUpdated(const ObserverLocation& location) {
@@ -269,8 +327,14 @@ void MainWindow::updateSatelliteTable() {
         //     rowToSelect = i;
         // }
 
-        // Name
-        m_satelliteTable->setItem(i, 0, new QTableWidgetItem(sat.name));
+        // Name (bold while the radio is tracking it)
+        QTableWidgetItem* nameItem = new QTableWidgetItem(sat.name);
+        if (m_radio->isTracking() && sat.catalogNumber == m_radio->status().catalogNumber) {
+            QFont font = nameItem->font();
+            font.setBold(true);
+            nameItem->setFont(font);
+        }
+        m_satelliteTable->setItem(i, 0, nameItem);
 
         // Azimuth (sortable by numeric value)
         m_satelliteTable->setItem(i, 1,
@@ -384,6 +448,7 @@ void MainWindow::onTableSelectionChanged() {
         if (nameItem) {
             QString satelliteName = nameItem->text();
             m_skyMap->setSelectedSatellite(satelliteName);
+            setRadioSatellite(satelliteName);
         }
     } else {
         // Clear selection
@@ -394,6 +459,8 @@ void MainWindow::onTableSelectionChanged() {
 }
 
 void MainWindow::onSkyMapSatelliteClicked(const QString& satelliteName) {
+    if (!satelliteName.isEmpty()) setRadioSatellite(satelliteName);
+
     // Block signals to prevent feedback loop
     m_satelliteTable->blockSignals(true);
 
@@ -423,4 +490,108 @@ void MainWindow::onSkyMapSatelliteClicked(const QString& satelliteName) {
     }
 
     m_satelliteTable->blockSignals(false);
+}
+
+bool MainWindow::findSatellite(const QString& name, Satellite* out) const {
+    for (const Satellite& sat : m_tracker->getAllSatellites()) {
+        if (sat.name == name) {
+            *out = sat;
+            return true;
+        }
+    }
+    return false;
+}
+
+void MainWindow::setRadioSatellite(const QString& satelliteName) {
+    if (satelliteName == m_radioSatName) return;
+
+    Satellite sat;
+    if (!findSatellite(satelliteName, &sat)) return;
+    m_radioSatName = satelliteName;
+    m_radioSatLabel->setText(satelliteName);
+
+    m_transponderCombo->clear();
+    for (int i = 0; i < sat.transponders.size(); ++i) {
+        const Transponder& t = sat.transponders[i];
+        if (t.downlinkFreq <= 0) continue;
+        bool tunable = m_radio->inTunerRange(t.downlinkFreq);
+        m_transponderCombo->addItem(QString("%1 MHz  %2 (%3)%4")
+                                        .arg(t.downlinkFreq, 0, 'f', 3)
+                                        .arg(t.name, t.mode,
+                                             tunable ? QString() : QString("  - out of range")),
+                                    i);
+        if (!tunable) {
+            // Grey out downlinks the SDR can't receive (e.g. 10 GHz QO-100)
+            m_transponderCombo->setItemData(m_transponderCombo->count() - 1, 0, Qt::UserRole - 1);
+        }
+    }
+
+    int defaultIndex = m_radio->defaultTransponder(sat);
+    int comboIndex = m_transponderCombo->findData(defaultIndex);
+    if (comboIndex >= 0) m_transponderCombo->setCurrentIndex(comboIndex);
+
+    bool canTune = defaultIndex >= 0;
+    m_transponderCombo->setEnabled(m_transponderCombo->count() > 0);
+    m_radioTuneButton->setEnabled(canTune);
+    if (m_transponderCombo->count() == 0) {
+        m_transponderCombo->addItem("No known downlinks");
+    }
+}
+
+void MainWindow::onTableDoubleClicked(int row, int /*column*/) {
+    QTableWidgetItem* nameItem = m_satelliteTable->item(row, 0);
+    if (!nameItem) return;
+    setRadioSatellite(nameItem->text());
+    if (m_radioTuneButton->isEnabled()) onRadioTuneClicked();
+}
+
+void MainWindow::onRadioConnectClicked() {
+    if (m_radio->status().connected) {
+        m_radio->disconnectFromRadio();
+        return;
+    }
+    QSettings settings;
+    settings.setValue("radio/host", m_radioHostEdit->text().trimmed());
+    settings.setValue("radio/port", m_radioPortSpin->value());
+    m_radio->setServer(m_radioHostEdit->text().trimmed(), quint16(m_radioPortSpin->value()));
+    m_radio->connectToRadio();
+}
+
+void MainWindow::onRadioTuneClicked() {
+    Satellite sat;
+    if (!findSatellite(m_radioSatName, &sat)) return;
+    QVariant data = m_transponderCombo->currentData();
+    if (!data.isValid()) return;
+
+    m_radio->setServer(m_radioHostEdit->text().trimmed(), quint16(m_radioPortSpin->value()));
+    QString failure = m_radio->startTracking(sat, data.toInt());
+    if (!failure.isEmpty()) {
+        m_radioStatusLabel->setText(failure);
+    }
+}
+
+void MainWindow::onRadioStatusChanged() {
+    RadioController::Status s = m_radio->status();
+
+    m_radioConnectButton->setText(s.connected ? "Disconnect" : "Connect");
+    m_radioHostEdit->setEnabled(!s.connected);
+    m_radioPortSpin->setEnabled(!s.connected);
+    m_radioStopButton->setEnabled(s.tracking);
+
+    if (s.tracking && s.connected && s.tunedHz > 0) {
+        QString text = QString("%1: %2 MHz (Doppler %3%4 kHz")
+                           .arg(s.satelliteName)
+                           .arg(s.tunedHz / 1e6, 0, 'f', 6)
+                           .arg(s.dopplerHz >= 0 ? "+" : "")
+                           .arg(s.dopplerHz / 1e3, 0, 'f', 2);
+        if (s.offsetHz != 0) {
+            text += QString(", offset %1%2 kHz").arg(s.offsetHz >= 0 ? "+" : "").arg(s.offsetHz / 1e3, 0, 'f', 2);
+        }
+        text += ")";
+        if (s.elevation < 0) text += " - below horizon";
+        m_radioStatusLabel->setText(text);
+    } else {
+        m_radioStatusLabel->setText(s.message);
+    }
+    m_radioStatusLabel->setToolTip(s.message);
 }

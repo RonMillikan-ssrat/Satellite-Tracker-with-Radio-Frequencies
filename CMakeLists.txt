@@ -42,6 +42,7 @@ set(SOURCES
     src/sgp4wrapper.cpp
     src/tleparser.cpp
     src/apiserver.cpp
+    src/radiocontroller.cpp
 )
 
 set(HEADERS
@@ -52,6 +53,7 @@ set(HEADERS
     include/tleparser.h
     include/satellite.h
     include/apiserver.h
+    include/radiocontroller.h
 )
 
 # Add executable

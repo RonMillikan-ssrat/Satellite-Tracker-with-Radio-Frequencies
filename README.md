@@ -12,6 +12,7 @@ Valid radio frequencies provided, per satellite, when available.
 - **Auto-location** - Automatically detect your location via IP geolocation
 - **Manual location** - Set custom observer coordinates
 - **TLE data fetching** - Downloads latest satellite orbital data from CelesTrak
+- **SDR radio control** - Tunes Gqrx / SDR++ / rigctld to a satellite downlink with live Doppler correction
 
 ## Requirements
 
@@ -89,6 +90,51 @@ cmake --build . --config Release
 - **MainWindow** - GUI coordination
 - **SGP4Wrapper** - SGP4/SDP4 orbital propagation (via libsgp4)
 - **TLEParser** - Parse Two-Line Element sets
+- **RadioController** - Doppler-corrected tuning over the rigctl protocol
+
+## SDR Radio Control
+
+The tracker can keep a software defined radio tuned to a satellite's downlink,
+correcting for Doppler shift once per second (up to about ±3.5 kHz at 145 MHz
+and ±10 kHz at 435 MHz for a LEO pass). It does not talk to the SDR dongle
+directly: an SDR application does the demodulation and audio, and the tracker
+steers it over the Hamlib **rigctl** TCP protocol, the same way Gpredict does.
+
+The receiver range defaults to the NooElec NESDR Smart v5 (RTL-SDR, 100 kHz–1.75 GHz).
+That covers the 2 m / 70 cm amateur satellites, the ISS and 137 MHz weather
+satellites; downlinks outside it (e.g. 2.4 GHz, 10 GHz) are shown greyed out.
+
+### Setup (Linux, RTL-SDR)
+
+```bash
+sudo apt install rtl-sdr gqrx-sdr
+# Stop the DVB-TV kernel driver from claiming the dongle, then replug it
+echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
+rtl_test   # should find the "Generic RTL2832U" device
+```
+
+Then start the SDR application and enable its rigctl server:
+
+| Application | How to enable | Port |
+|-------------|---------------|------|
+| Gqrx | Tools → Remote control | 7356 |
+| SDR++ | Module Manager → add *Rigctl Server*, then Start | 4532 |
+| Hamlib `rigctld` (hardware radio) | `rigctld -m <model> -r <device>` | 4532 |
+
+### Use
+
+1. In the **Radio (rigctl)** panel set host/port and click **Connect**.
+2. Select a satellite in the table or sky map; its downlinks appear in the
+   transponder list (the first tunable one is preselected).
+3. Click **Tune** (or double-click the table row). The radio's mode and filter
+   are set once (FM, USB, CW, …) and the frequency is updated every second.
+   The tracked satellite is shown in bold.
+4. Tuning also works before AOS: the radio is pre-tuned so you hear the
+   satellite as soon as it clears the horizon.
+
+To work a station inside a linear (SSB) transponder, just tune the SDR
+application by hand: the tracker reads the frequency back each second and keeps
+your change as a manual offset on top of the Doppler correction.
 
 ## Orbital Accuracy
 
@@ -118,12 +164,17 @@ While running, the app serves a read/write JSON API on `http://127.0.0.1:8765`
 | GET  | `/satellites/visible` | Satellites above the horizon |
 | GET  | `/satellites/{id}` | One satellite by NORAD catalog number or exact name |
 | POST | `/tle/refresh` | Re-download TLE data (optional `{"url": "..."}`) |
+| GET  | `/radio` | Radio link status, tuned frequency, Doppler and manual offset (Hz) |
+| POST | `/radio/connect` | Connect to rigctl (optional `{"host": "127.0.0.1", "port": 7356}`) |
+| POST | `/radio/tune` | Doppler-track a downlink: `{"satellite": "ISS (ZARYA)", "transponder": 0}` (`transponder` is optional) |
+| POST | `/radio/stop` | Stop tracking (radio stays on its last frequency) |
 
 ### MCP server
 
 `mcp_server/satellite_tracker_mcp.py` wraps this API as MCP tools
 (`get_status`, `get_observer_location`, `set_observer_location`,
-`get_visible_satellites`, `list_all_satellites`, `get_satellite`, `refresh_tle_data`).
+`get_visible_satellites`, `list_all_satellites`, `get_satellite`, `refresh_tle_data`,
+`get_radio_status`, `connect_radio`, `tune_radio`, `stop_radio`).
 The Qt app must be running for the tools to return data.
 
 ```bash
@@ -180,7 +231,8 @@ m_updateTimer->start(2000);
 - [x] Integrate full SGP4 library for accurate propagation
 - [ ] Add satellite pass predictions
 - [ ] Show satellite ground tracks on a map
-- [ ] Add Doppler shift calculations for radio frequencies
+- [x] Add Doppler shift calculations for radio frequencies
+- [x] Control an SDR via rigctl (Gqrx, SDR++, rigctld)
 - [ ] Save/load observer locations
 - [ ] Export pass predictions to calendar
 - [ ] Add 3D visualization option
