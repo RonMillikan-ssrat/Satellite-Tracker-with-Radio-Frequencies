@@ -195,9 +195,11 @@ void MainWindow::setupUI() {
     // first column, so browsing the table kept jumping. Clicks on the sky map
     // still scroll to the satellite explicitly (scrollToItem).
     m_satelliteTable->setAutoScroll(false);
-    // One line per frequency: rows grow to fit instead of the column growing wide
+    // One line per frequency: rows are made taller to fit instead of the column
+    // growing wide. Heights are set directly in updateSatelliteTable();
+    // QHeaderView::ResizeToContents re-measures every cell on every change and
+    // made the 2 s rebuild quadratic in the number of rows.
     m_satelliteTable->setWordWrap(false);
-    m_satelliteTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 
     splitter->addWidget(m_satelliteTable);
 
@@ -410,6 +412,9 @@ void MainWindow::updateSatelliteTable() {
         selectedSatName = skyMapSelection;
     }
 
+    // Repaint once at the end instead of after every cell
+    m_satelliteTable->setUpdatesEnabled(false);
+
     // Keep the user's scroll position across the rebuild
     const int vScroll = m_satelliteTable->verticalScrollBar()->value();
     const int hScroll = m_satelliteTable->horizontalScrollBar()->value();
@@ -511,6 +516,19 @@ void MainWindow::updateSatelliteTable() {
         m_satelliteTable->setSortingEnabled(true);
     }
 
+    // Row heights follow the number of frequency lines (set after sorting,
+    // because sorting moves items between rows)
+    const int lineHeight = m_satelliteTable->fontMetrics().lineSpacing();
+    const int baseHeight = m_satelliteTable->verticalHeader()->defaultSectionSize();
+    for (int row = 0; row < m_satelliteTable->rowCount(); ++row) {
+        QTableWidgetItem* freqItem = m_satelliteTable->item(row, 5);
+        int lines = freqItem ? int(freqItem->text().count('\n')) + 1 : 1;
+        int height = lines > 1 ? qMax(baseHeight, lines * lineHeight + 8) : baseHeight;
+        if (m_satelliteTable->rowHeight(row) != height) {
+            m_satelliteTable->setRowHeight(row, height);
+        }
+    }
+
     // After sorting is done, find and select the correct row by name
     if (!selectedSatName.isEmpty()) {
         bool found = false;
@@ -542,6 +560,7 @@ void MainWindow::updateSatelliteTable() {
 
     // Unblock signals AFTER selection is restored
     m_satelliteTable->blockSignals(false);
+    m_satelliteTable->setUpdatesEnabled(true);
 
     // Don't auto-resize columns - let user control column widths
     // Only resize on first load if columns haven't been sized yet

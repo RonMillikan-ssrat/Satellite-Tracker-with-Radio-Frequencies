@@ -7,13 +7,16 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# Enable debug symbols and disable optimization for Debug builds
+# Default to an optimized build that keeps debug symbols. SGP4 propagation
+# runs about 2x faster than at -O0, which matters with large catalogs.
+# For step-through debugging configure with -DCMAKE_BUILD_TYPE=Debug.
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall")
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 
 # Export compile commands for IntelliSense
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
