@@ -46,6 +46,7 @@ set(SOURCES
     src/passpredictor.cpp
     src/passestab.cpp
     src/satellitetab.cpp
+    src/catalog.cpp
 )
 
 set(HEADERS
@@ -61,6 +62,7 @@ set(HEADERS
     include/passestab.h
     include/satellitetab.h
     include/numerictableitem.h
+    include/catalog.h
 )
 
 # Add executable

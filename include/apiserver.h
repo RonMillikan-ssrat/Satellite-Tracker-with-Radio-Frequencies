@@ -21,7 +21,10 @@
 //   GET  /satellites                 - all satellites (?visible=true to filter)
 //   GET  /satellites/visible         - satellites above the horizon
 //   GET  /satellites/{id}            - one satellite by catalog number or name
-//   POST /tle/refresh                - re-download TLE data (optional {"url": ...})
+//   GET  /catalogs                   - available catalogs and which one is loaded
+//   GET  /catalog                    - the loaded catalog (id, count, data age, loading)
+//   POST /catalog                    - load a catalog {"id": "starlink", optional "refresh": true}
+//   POST /tle/refresh                - refresh the loaded catalog, or load {"url": ...} instead
 //   GET  /passes                     - predicted passes (?hours=24&minElevation=10&satellite=ID&receivableOnly=true)
 //   GET  /radio                      - SDR/rigctl connection and tuning status
 //   POST /radio/connect              - connect to rigctl (optional {"host","port"})
@@ -40,6 +43,7 @@ public:
     static QJsonObject satelliteToJson(const Satellite& sat, bool includeGroundTrack);
     static QJsonObject observerToJson(const ObserverLocation& observer);
     static QJsonObject radioStatusToJson(const RadioController::Status& status);
+    static QJsonObject catalogStateToJson(const SatelliteTracker::CatalogState& state);
 
 private slots:
     void onNewConnection();

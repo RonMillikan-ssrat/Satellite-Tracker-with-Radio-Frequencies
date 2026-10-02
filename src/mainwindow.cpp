@@ -29,9 +29,13 @@ MainWindow::MainWindow(QWidget *parent)
         m_statusLabel->setText(QString("Error: could not start API on port %1").arg(apiPort));
     }
 
-    // Auto-fetch location and TLE data on startup
+    // Auto-fetch location on startup, and load only the last-used catalog
+    // (from the local cache when it is fresh; nothing else is downloaded)
     m_tracker->fetchCurrentLocation();
-    m_tracker->fetchTLEData();
+    QString catalogId = QSettings().value("catalog/id", SatelliteCatalog::defaultId()).toString();
+    if (!SatelliteCatalog::find(catalogId)) catalogId = SatelliteCatalog::defaultId();
+    selectCatalogInCombo(catalogId);
+    m_tracker->loadCatalog(catalogId);
 }
 
 MainWindow::~MainWindow() {
@@ -54,9 +58,13 @@ void MainWindow::setupUI() {
     m_statusLabel->setMaximumHeight(20); // Limit height
     m_locationLabel = new QLabel("Location: Unknown");
     m_locationLabel->setMaximumHeight(20);
+    m_catalogLabel = new QLabel("No catalog loaded");
+    m_catalogLabel->setMaximumHeight(20);
 
     statusLayout->addWidget(m_statusLabel);
     statusLayout->addStretch();
+    statusLayout->addWidget(m_catalogLabel);
+    statusLayout->addSpacing(16);
     statusLayout->addWidget(m_locationLabel);
     mainLayout->addLayout(statusLayout);
 
@@ -67,7 +75,16 @@ void MainWindow::setupUI() {
     controlLayout->setSpacing(6);
     controlLayout->setContentsMargins(6, 6, 6, 6);
 
-    m_fetchTLEButton = new QPushButton("Fetch Satellite Data");
+    m_catalogCombo = new QComboBox();
+    for (const SatelliteCatalog& catalog : SatelliteCatalog::all()) {
+        m_catalogCombo->addItem(catalog.label, catalog.id);
+        m_catalogCombo->setItemData(m_catalogCombo->count() - 1, catalog.description, Qt::ToolTipRole);
+    }
+    m_catalogCombo->setToolTip("Which satellites to track. A catalog is downloaded only when you choose it.");
+
+    m_fetchTLEButton = new QPushButton("Refresh Data");
+    m_fetchTLEButton->setToolTip("Re-download the selected catalog. CelesTrak updates about every "
+                                 "2 hours, so a newer cached copy is reused instead.");
     m_autoLocateButton = new QPushButton("Auto-Locate");
 
     // Compact location inputs
@@ -100,6 +117,9 @@ void MainWindow::setupUI() {
     controlLayout->addWidget(altLabel);
     controlLayout->addWidget(m_altEdit);
     controlLayout->addWidget(m_autoLocateButton);
+    controlLayout->addSpacing(12);
+    controlLayout->addWidget(new QLabel("Catalog:"));
+    controlLayout->addWidget(m_catalogCombo);
     controlLayout->addWidget(m_fetchTLEButton);
     controlLayout->addStretch();
 
@@ -196,6 +216,15 @@ void MainWindow::setupConnections() {
             this, &MainWindow::onPositionsUpdated);
     connect(m_tracker, &SatelliteTracker::errorOccurred,
             this, &MainWindow::onErrorOccurred);
+    connect(m_tracker, &SatelliteTracker::statusMessage,
+            m_statusLabel, &QLabel::setText);
+    connect(m_tracker, &SatelliteTracker::catalogLoading,
+            this, &MainWindow::onCatalogLoading);
+    connect(m_tracker, &SatelliteTracker::catalogLoaded,
+            this, &MainWindow::onCatalogLoaded);
+    // activated (not currentIndexChanged): only user picks trigger a load
+    connect(m_catalogCombo, &QComboBox::activated,
+            this, &MainWindow::onCatalogActivated);
 
     // Connect buttons
     connect(m_fetchTLEButton, &QPushButton::clicked,
@@ -271,15 +300,66 @@ void MainWindow::onPositionsUpdated() {
 
 void MainWindow::onErrorOccurred(const QString& error) {
     m_statusLabel->setText("Error: " + error);
+    // A failed catalog download leaves the previous catalog loaded
+    SatelliteTracker::CatalogState state = m_tracker->catalogState();
+    if (!state.loading) {
+        selectCatalogInCombo(state.id);
+        updateCatalogLabel();
+    }
 }
 
 void MainWindow::onUpdateTimer() {
     m_tracker->updatePositions();
+    updateCatalogLabel();  // keeps the data age current
 }
 
 void MainWindow::onFetchTLEClicked() {
-    m_statusLabel->setText("Fetching satellite data...");
-    m_tracker->fetchTLEData();
+    QString catalogId = m_catalogCombo->currentData().toString();
+    m_tracker->loadCatalog(catalogId, true);
+}
+
+void MainWindow::onCatalogActivated(int index) {
+    QString catalogId = m_catalogCombo->itemData(index).toString();
+    SatelliteTracker::CatalogState state = m_tracker->catalogState();
+    if (catalogId == state.id && !state.loading) return;
+    m_tracker->loadCatalog(catalogId);
+}
+
+void MainWindow::onCatalogLoading(const QString& catalogId) {
+    selectCatalogInCombo(catalogId);
+    updateCatalogLabel();
+}
+
+void MainWindow::onCatalogLoaded(const QString& catalogId) {
+    selectCatalogInCombo(catalogId);
+    if (SatelliteCatalog::find(catalogId)) {
+        QSettings().setValue("catalog/id", catalogId);  // reopen with the same catalog
+    }
+    updateCatalogLabel();
+}
+
+void MainWindow::selectCatalogInCombo(const QString& catalogId) {
+    int index = m_catalogCombo->findData(catalogId);
+    if (index >= 0) m_catalogCombo->setCurrentIndex(index);
+}
+
+void MainWindow::updateCatalogLabel() {
+    SatelliteTracker::CatalogState state = m_tracker->catalogState();
+    QString text;
+    if (!state.id.isEmpty()) {
+        qint64 minutes = state.dataTimeUtc.secsTo(QDateTime::currentDateTimeUtc()) / 60;
+        QString age = minutes < 1 ? QString("just now")
+                    : minutes < 120 ? QString("%1 min old").arg(minutes)
+                    : QString("%1 h old").arg(minutes / 60);
+        text = QString("%1 · %2 satellites · data %3").arg(state.label).arg(state.satelliteCount).arg(age);
+    }
+    if (state.loading) {
+        const SatelliteCatalog* loading = SatelliteCatalog::find(state.loadingId);
+        QString name = loading ? loading->label : state.loadingId;
+        text = text.isEmpty() ? QString("Downloading %1...").arg(name)
+                              : text + QString("  |  downloading %1...").arg(name);
+    }
+    m_catalogLabel->setText(text.isEmpty() ? QString("No catalog loaded") : text);
 }
 
 void MainWindow::onAutoLocateClicked() {

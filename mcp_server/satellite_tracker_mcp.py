@@ -103,11 +103,44 @@ def get_satellite(name_or_catalog_number: str) -> dict:
 
 
 @mcp.tool()
+def list_catalogs() -> dict:
+    """List the satellite catalogs the app can load (id, label, description,
+    CelesTrak sources) and which one is loaded now, with its satellite count
+    and data age. Catalogs: amateur, russian-weather (Meteor-M 137 MHz LRPT),
+    russia-china (all active Russian/Chinese satellites), and constellations
+    (starlink, oneweb, kuiper, qianfan, hulianwang)."""
+    return _request("GET", "/catalogs")
+
+
+@mcp.tool()
+def select_catalog(catalog_id: str, refresh: bool = False) -> dict:
+    """Load a satellite catalog by id (see list_catalogs). It replaces the
+    loaded satellites for every other tool, including get_passes.
+
+    A cached copy younger than 2 hours is used without downloading (CelesTrak
+    updates about every 2 hours); otherwise the catalog is downloaded and the
+    result has loading=true. Call get_catalog until loading is false before
+    querying satellites; if the download failed, get_catalog reports
+    lastError and the previous (or stale cached) catalog stays loaded.
+    refresh=true re-downloads, still subject to the 2-hour cache.
+    """
+    return _request("POST", "/catalog", {"id": catalog_id, "refresh": refresh})
+
+
+@mcp.tool()
+def get_catalog() -> dict:
+    """Get the loaded catalog: id, label, satellite count, when its data was
+    downloaded (dataTimeUtc / dataAgeMinutes), and whether a download is
+    still in progress (loading)."""
+    return _request("GET", "/catalog")
+
+
+@mcp.tool()
 def refresh_tle_data(url: str | None = None) -> dict:
-    """Re-download orbital (TLE) data. Defaults to CelesTrak amateur satellites;
-    pass a CelesTrak URL such as
-    https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle
-    to track a different group."""
+    """Refresh the loaded catalog's orbital (TLE) data (reuses a cache younger
+    than 2 hours). To track a group with no catalog, pass a CelesTrak URL such as
+    https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle;
+    prefer select_catalog for the built-in catalogs."""
     return _request("POST", "/tle/refresh", {"url": url} if url else {})
 
 

@@ -121,8 +121,56 @@ ApiServer::Response ApiServer::handleRequest(const QString& method, const QUrl& 
             {"positionsTimeUtc", m_tracker->getPositionsTime().toString(Qt::ISODateWithMs)},
             {"satelliteCount", m_tracker->getAllSatellites().size()},
             {"visibleCount", m_tracker->getVisibleSatellites().size()},
-            {"transmitterSatelliteCount", m_tracker->transmitterSatelliteCount()}
+            {"transmitterSatelliteCount", m_tracker->transmitterSatelliteCount()},
+            {"catalog", catalogStateToJson(m_tracker->catalogState())}
         });
+        return r;
+    }
+
+    if (path == "/catalogs") {
+        if (method != "GET") return error(405, "Use GET");
+        QString current = m_tracker->catalogState().id;
+        QJsonArray arr;
+        for (const SatelliteCatalog& catalog : SatelliteCatalog::all()) {
+            QJsonArray queries;
+            for (const QString& q : catalog.gpQueries) queries.append(SatelliteCatalog::gpUrl(q));
+            QJsonObject obj{
+                {"id", catalog.id},
+                {"label", catalog.label},
+                {"description", catalog.description},
+                {"sources", queries},
+                {"loaded", catalog.id == current}
+            };
+            if (!catalog.owners.isEmpty()) obj["ownerFilter"] = QJsonArray::fromStringList(catalog.owners);
+            arr.append(obj);
+        }
+        r.body = QJsonDocument(QJsonObject{
+            {"catalogs", arr},
+            {"current", catalogStateToJson(m_tracker->catalogState())}
+        });
+        return r;
+    }
+
+    if (path == "/catalog") {
+        if (method == "GET") {
+            r.body = QJsonDocument(catalogStateToJson(m_tracker->catalogState()));
+            return r;
+        }
+        if (method != "POST") return error(405, "Use GET or POST");
+        QJsonParseError parseError;
+        QJsonObject obj = QJsonDocument::fromJson(body, &parseError).object();
+        if (parseError.error != QJsonParseError::NoError) {
+            return error(400, "Invalid JSON: " + parseError.errorString());
+        }
+        QString id = obj["id"].toString();
+        if (!SatelliteCatalog::find(id)) {
+            return error(404, "Unknown catalog: " + id + " (see GET /catalogs)");
+        }
+        m_tracker->loadCatalog(id, obj["refresh"].toBool(false));
+        // Loaded synchronously from a fresh cache, otherwise downloading
+        SatelliteTracker::CatalogState state = m_tracker->catalogState();
+        r.status = state.loading ? 202 : 200;
+        r.body = QJsonDocument(catalogStateToJson(state));
         return r;
     }
 
@@ -158,12 +206,17 @@ ApiServer::Response ApiServer::handleRequest(const QString& method, const QUrl& 
         QJsonObject obj = QJsonDocument::fromJson(body).object();
         QString tleUrl = obj["url"].toString();
         if (tleUrl.isEmpty()) {
-            m_tracker->fetchTLEData();
+            QString id = m_tracker->catalogState().id;
+            if (!SatelliteCatalog::find(id)) id = SatelliteCatalog::defaultId();
+            m_tracker->loadCatalog(id, true);
+            SatelliteTracker::CatalogState state = m_tracker->catalogState();
+            r.status = state.loading ? 202 : 200;
+            r.body = QJsonDocument(catalogStateToJson(state));
         } else {
             m_tracker->fetchTLEData(tleUrl);
+            r.status = 202;
+            r.body = QJsonDocument(QJsonObject{{"status", "fetch started"}, {"url", tleUrl}});
         }
-        r.status = 202;
-        r.body = QJsonDocument(QJsonObject{{"status", "fetch started"}});
         return r;
     }
 
@@ -387,6 +440,23 @@ QJsonObject ApiServer::radioStatusToJson(const RadioController::Status& s) {
         obj["manualOffsetHz"] = double(s.offsetHz);
         obj["tunedHz"] = double(s.tunedHz);
     }
+    return obj;
+}
+
+QJsonObject ApiServer::catalogStateToJson(const SatelliteTracker::CatalogState& state) {
+    QJsonObject obj{
+        {"id", state.id},
+        {"label", state.label},
+        {"satelliteCount", state.satelliteCount},
+        {"fromCache", state.fromCache},
+        {"loading", state.loading}
+    };
+    if (state.dataTimeUtc.isValid()) {
+        obj["dataTimeUtc"] = state.dataTimeUtc.toString(Qt::ISODate);
+        obj["dataAgeMinutes"] = double(state.dataTimeUtc.secsTo(QDateTime::currentDateTimeUtc()) / 60);
+    }
+    if (state.loading) obj["loadingId"] = state.loadingId;
+    if (!state.lastError.isEmpty()) obj["lastError"] = state.lastError;
     return obj;
 }
 

@@ -193,13 +193,29 @@ void SkyMapWidget::drawElevationCircles(QPainter& painter) {
     painter.drawEllipse(QPointF(centerX, centerY), maxRadius, maxRadius);
 }
 
+namespace {
+// Above this many satellites in view (e.g. a Starlink catalog) the map draws
+// small unlabeled dots and only the selected satellite's track and labels
+const int kDenseSkyThreshold = 60;
+
+int visibleCount(const QList<Satellite>& satellites) {
+    int count = 0;
+    for (const Satellite& sat : satellites) {
+        if (sat.isVisible) ++count;
+    }
+    return count;
+}
+}
+
 void SkyMapWidget::drawGroundTracks(QPainter& painter) {
     bool hasSelection = !m_selectedSatellite.isEmpty();
+    bool dense = visibleCount(m_satellites) > kDenseSkyThreshold;
 
     for (const Satellite& sat : m_satellites) {
         if (!sat.isVisible || sat.groundTrack.isEmpty()) continue;
 
         bool isSelected = (sat.name == m_selectedSatellite);
+        if (dense && !isSelected && sat.name != m_hoveredSatellite) continue;
 
         // Color based on range rate: blue (approaching) to red (departing)
         QColor trackColor;
@@ -353,6 +369,7 @@ void SkyMapWidget::drawLegend(QPainter& painter) {
 void SkyMapWidget::drawSatellites(QPainter& painter) {
     // Determine if we should dim unselected satellites
     bool hasSelection = !m_selectedSatellite.isEmpty();
+    bool dense = visibleCount(m_satellites) > kDenseSkyThreshold;
 
     for (const Satellite& sat : m_satellites) {
         if (!sat.isVisible) continue;
@@ -383,7 +400,7 @@ void SkyMapWidget::drawSatellites(QPainter& painter) {
         }
 
         // Draw satellite circle
-        int radius = 6;
+        int radius = dense ? 3 : 6;
         if (isSelected) {
             radius = 10; // Larger for selected
             // Draw selection ring
@@ -403,7 +420,7 @@ void SkyMapWidget::drawSatellites(QPainter& painter) {
         painter.drawEllipse(point, radius, radius);
 
         // Draw satellite name (always show for selected, hover, or if no selection)
-        if (isSelected || isHovered || !hasSelection) {
+        if (isSelected || isHovered || (!hasSelection && !dense)) {
             painter.setPen(Qt::white);
             painter.setFont(QFont("Arial", isSelected ? 9 : 8, isSelected ? QFont::Bold : QFont::Normal));
             painter.drawText(point.x() + radius + 5, point.y() + 5, sat.name);

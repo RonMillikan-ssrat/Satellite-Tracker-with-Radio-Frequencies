@@ -162,12 +162,331 @@ void SatelliteTracker::parseLocationData(const QByteArray& data) {
 }
 
 void SatelliteTracker::fetchTLEData(const QString& tleUrl) {
+    // An explicit URL replaces whatever catalog is loaded or loading
+    m_pending = PendingDownload();
+    int generation = ++m_catalogGeneration;
+
     QNetworkRequest request{QUrl(tleUrl)};
+    request.setHeader(QNetworkRequest::UserAgentHeader, "SatelliteTracker/1.0");
+    request.setTransferTimeout(60000);
     QNetworkReply* reply = m_networkManager->get(request);
-    connect(reply, &QNetworkReply::finished, this, &SatelliteTracker::onTLEReplyFinished);
-    
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, tleUrl]() {
+        reply->deleteLater();
+        if (generation != m_catalogGeneration) return;  // superseded by a catalog load
+        if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred("Failed to fetch TLE data: " + reply->errorString());
+            return;
+        }
+        QList<Satellite> satellites = TLEParser::parseTLEData(QString::fromUtf8(reply->readAll()));
+        if (satellites.isEmpty()) {
+            emit errorOccurred("No satellites found at " + tleUrl);
+            return;
+        }
+        m_catalogId = "custom";
+        m_catalogLabel = "Custom URL";
+        m_catalogDataTime = QDateTime::currentDateTimeUtc();
+        m_catalogFromCache = false;
+        m_catalogError.clear();
+        setSatellites(satellites);
+        emit catalogLoaded(m_catalogId);
+    });
+
     // Refresh radio frequencies alongside the orbital elements
-    fetchTransmitterData();
+    maybeRefreshTransmitters(kMinRefreshSeconds);
+}
+
+bool SatelliteTracker::loadCatalog(const QString& catalogId, bool force) {
+    const SatelliteCatalog* catalog = SatelliteCatalog::find(catalogId);
+    if (!catalog) {
+        emit errorOccurred("Unknown catalog: " + catalogId);
+        return false;
+    }
+
+    // Already downloading this one: let that finish
+    if (m_pending.outstanding > 0 && m_pending.catalogId == catalog->id) {
+        return true;
+    }
+
+    QFileInfo cache(catalogCachePath(catalog->id));
+    qint64 ageSeconds = cache.exists()
+        ? cache.lastModified().toUTC().secsTo(QDateTime::currentDateTimeUtc()) : -1;
+    bool fresh = ageSeconds >= 0 && ageSeconds < kMinRefreshSeconds;
+
+    if (fresh && loadCatalogFromCache(*catalog)) {
+        if (force) {
+            emit statusMessage(QString("%1 data is %2 min old. CelesTrak updates about every "
+                                       "2 hours, so it was reloaded from the cache.")
+                                   .arg(catalog->label)
+                                   .arg(ageSeconds / 60));
+        }
+        maybeRefreshTransmitters(24 * 3600);
+        return true;
+    }
+
+    downloadCatalog(*catalog);
+    maybeRefreshTransmitters(force ? kMinRefreshSeconds : 24 * 3600);
+    return true;
+}
+
+SatelliteTracker::CatalogState SatelliteTracker::catalogState() const {
+    CatalogState state;
+    state.id = m_catalogId;
+    state.label = m_catalogLabel;
+    state.satelliteCount = m_satellites.size();
+    state.dataTimeUtc = m_catalogDataTime;
+    state.fromCache = m_catalogFromCache;
+    state.loading = m_pending.outstanding > 0;
+    state.loadingId = state.loading ? m_pending.catalogId : QString();
+    state.lastError = m_catalogError;
+    return state;
+}
+
+QString SatelliteTracker::catalogCachePath(const QString& catalogId) const {
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+           + "/catalogs/" + catalogId + ".tle";
+}
+
+bool SatelliteTracker::loadCatalogFromCache(const SatelliteCatalog& catalog) {
+    QString path = catalogCachePath(catalog.id);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    QList<Satellite> satellites = TLEParser::parseTLEData(QString::fromUtf8(file.readAll()));
+    if (satellites.isEmpty()) return false;
+
+    // Cancel any download in flight; the cache wins
+    m_pending = PendingDownload();
+    ++m_catalogGeneration;
+
+    m_catalogId = catalog.id;
+    m_catalogLabel = catalog.label;
+    m_catalogDataTime = QFileInfo(path).lastModified().toUTC();
+    m_catalogFromCache = true;
+    m_catalogError.clear();
+    setSatellites(satellites);
+    emit catalogLoaded(catalog.id);
+    return true;
+}
+
+void SatelliteTracker::downloadCatalog(const SatelliteCatalog& catalog) {
+    m_pending = PendingDownload();
+    m_pending.generation = ++m_catalogGeneration;
+    m_pending.catalogId = catalog.id;
+    const int generation = m_pending.generation;
+
+    emit catalogLoading(catalog.id);
+    emit statusMessage(QString("Downloading %1 from CelesTrak...").arg(catalog.label));
+
+    for (const QString& query : catalog.gpQueries) {
+        ++m_pending.outstanding;
+        QNetworkRequest request{QUrl(SatelliteCatalog::gpUrl(query))};
+        request.setHeader(QNetworkRequest::UserAgentHeader, "SatelliteTracker/1.0");
+        request.setTransferTimeout(60000);  // GROUP=active is a few MB
+        QNetworkReply* reply = m_networkManager->get(request);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, generation, query]() {
+            reply->deleteLater();
+            if (generation != m_catalogGeneration) return;
+            if (reply->error() == QNetworkReply::NoError) {
+                m_pending.tleParts.append(QString::fromUtf8(reply->readAll()));
+            } else {
+                int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                m_pending.gpFailures.append(QString("%1 (%2)")
+                                                .arg(query, http > 0 ? QString("HTTP %1").arg(http)
+                                                                     : reply->errorString()));
+            }
+            if (--m_pending.outstanding == 0) finishCatalogDownload();
+        });
+    }
+
+    if (!catalog.owners.isEmpty()) {
+        ++m_pending.outstanding;
+        requestSatcat(SatelliteCatalog::satcatUrl(), generation, false);
+    }
+}
+
+void SatelliteTracker::requestSatcat(const QString& url, int generation, bool isFallback) {
+    QNetworkRequest request{QUrl(url)};
+    request.setHeader(QNetworkRequest::UserAgentHeader, "SatelliteTracker/1.0");
+    request.setTransferTimeout(90000);
+    QNetworkReply* reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, isFallback, url]() {
+        reply->deleteLater();
+        if (generation != m_catalogGeneration) return;
+
+        QByteArray data;
+        QString problem;
+        if (reply->error() == QNetworkReply::NoError) {
+            data = reply->readAll();
+            if (!data.contains("NORAD_CAT_ID")) problem = "response is not SATCAT CSV";
+        } else {
+            problem = reply->errorString();
+        }
+
+        if (problem.isEmpty()) {
+            m_pending.satcat = data;
+        } else if (!isFallback) {
+            requestSatcat(SatelliteCatalog::satcatFallbackUrl(), generation, true);
+            return;  // still outstanding
+        } else {
+            m_pending.errors.append("SATCAT (" + url + "): " + problem);
+        }
+        if (--m_pending.outstanding == 0) finishCatalogDownload();
+    });
+}
+
+namespace {
+// Split one CSV line, honouring double-quoted fields ("a,b" and "" escapes)
+QList<QByteArray> splitCsvLine(const QByteArray& line) {
+    QList<QByteArray> fields;
+    QByteArray field;
+    bool quoted = false;
+    for (int i = 0; i < line.size(); ++i) {
+        char c = line[i];
+        if (quoted) {
+            if (c == '"') {
+                if (i + 1 < line.size() && line[i + 1] == '"') { field += '"'; ++i; }
+                else quoted = false;
+            } else {
+                field += c;
+            }
+        } else if (c == '"') {
+            quoted = true;
+        } else if (c == ',') {
+            fields.append(field);
+            field.clear();
+        } else if (c != '\r') {
+            field += c;
+        }
+    }
+    fields.append(field);
+    return fields;
+}
+
+bool isDebrisName(const QString& name) {
+    return name.endsWith(" R/B") || name.contains(" DEB");
+}
+}
+
+QSet<int> SatelliteTracker::parseSatcatOwners(const QByteArray& csv, const QStringList& owners, bool* ok) {
+    QSet<int> catalogNumbers;
+    *ok = false;
+    QList<QByteArray> lines = csv.split('\n');
+    if (lines.isEmpty()) return catalogNumbers;
+
+    QList<QByteArray> header = splitCsvLine(lines.first().trimmed());
+    int noradColumn = header.indexOf("NORAD_CAT_ID");
+    int ownerColumn = header.indexOf("OWNER");
+    if (noradColumn < 0 || ownerColumn < 0) return catalogNumbers;
+
+    QSet<QByteArray> wanted;
+    for (const QString& owner : owners) wanted.insert(owner.toUtf8());
+
+    for (int i = 1; i < lines.size(); ++i) {
+        if (lines[i].trimmed().isEmpty()) continue;
+        QList<QByteArray> fields = splitCsvLine(lines[i]);
+        if (fields.size() <= qMax(noradColumn, ownerColumn)) continue;
+        if (wanted.contains(fields[ownerColumn].trimmed())) {
+            catalogNumbers.insert(fields[noradColumn].trimmed().toInt());
+        }
+    }
+    *ok = true;
+    return catalogNumbers;
+}
+
+QString SatelliteTracker::toTLEText(const QList<Satellite>& satellites) {
+    QString text;
+    for (const Satellite& sat : satellites) {
+        text += sat.name + '\n' + sat.line1 + '\n' + sat.line2 + '\n';
+    }
+    return text;
+}
+
+void SatelliteTracker::finishCatalogDownload() {
+    PendingDownload done = m_pending;
+    m_pending = PendingDownload();
+    const SatelliteCatalog* catalog = SatelliteCatalog::find(done.catalogId);
+    if (!catalog) return;
+
+    QSet<int> ownedBy;
+    bool filterByOwner = !catalog->owners.isEmpty();
+    if (filterByOwner && done.errors.isEmpty()) {
+        bool ok = false;
+        ownedBy = parseSatcatOwners(done.satcat, catalog->owners, &ok);
+        if (!ok) done.errors.append("SATCAT CSV has no NORAD_CAT_ID/OWNER columns");
+    }
+
+    // Merge the parts: drop duplicates (name queries can overlap), rocket
+    // bodies and debris, and anything outside the owner filter
+    QList<Satellite> merged;
+    if (done.errors.isEmpty()) {
+        QSet<int> seen;
+        for (const QString& part : done.tleParts) {
+            for (const Satellite& sat : TLEParser::parseTLEData(part)) {
+                if (seen.contains(sat.catalogNumber) || isDebrisName(sat.name)) continue;
+                if (filterByOwner && !ownedBy.contains(sat.catalogNumber)) continue;
+                seen.insert(sat.catalogNumber);
+                merged.append(sat);
+            }
+        }
+    }
+
+    // Every GP query failed: treat as a failed download. If only some failed
+    // (e.g. one name in a multi-name catalog), keep what did arrive.
+    if (done.tleParts.isEmpty() && !done.gpFailures.isEmpty()) {
+        done.errors.append(done.gpFailures);
+    }
+
+    if (!done.errors.isEmpty() || merged.isEmpty()) {
+        QString why = done.errors.isEmpty() ? QString("no satellites returned") : done.errors.join("; ");
+        QString message;
+        if (loadCatalogFromCache(*catalog)) {
+            message = QString("Could not download %1 (%2). Using cached data from %3.")
+                          .arg(catalog->label, why,
+                               m_catalogDataTime.toLocalTime().toString("ddd h:mm AP"));
+        } else {
+            message = QString("Could not download %1: %2. %3 is still loaded.")
+                          .arg(catalog->label, why, m_catalogLabel.isEmpty() ? "Nothing" : m_catalogLabel);
+        }
+        m_catalogError = message;
+        emit errorOccurred(message);
+        return;
+    }
+
+    QString path = catalogCachePath(catalog->id);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile cache(path);
+    if (cache.open(QIODevice::WriteOnly)) {
+        cache.write(toTLEText(merged).toUtf8());
+        cache.commit();
+    }
+
+    m_catalogId = catalog->id;
+    m_catalogLabel = catalog->label;
+    m_catalogDataTime = QDateTime::currentDateTimeUtc();
+    m_catalogFromCache = false;
+    m_catalogError = done.gpFailures.isEmpty()
+        ? QString()
+        : QString("Loaded %1 without: %2").arg(catalog->label, done.gpFailures.join(", "));
+    setSatellites(merged);
+    emit catalogLoaded(catalog->id);
+    if (!m_catalogError.isEmpty()) emit statusMessage(m_catalogError);
+}
+
+void SatelliteTracker::maybeRefreshTransmitters(int maxAgeSeconds) {
+    if (m_transmitterFetchInFlight) return;
+    QFileInfo cache(transmitterCachePath());
+    bool stale = !cache.exists() || m_satnogsTransponders.isEmpty()
+                 || cache.lastModified().toUTC().secsTo(QDateTime::currentDateTimeUtc()) > maxAgeSeconds;
+    if (stale) fetchTransmitterData();
+}
+
+void SatelliteTracker::setSatellites(const QList<Satellite>& satellites) {
+    m_satellites = satellites;
+    // Populate transponder frequencies (SatNOGS, else built-in table)
+    for (Satellite& sat : m_satellites) {
+        applyTransponders(sat);
+    }
+    emit tleDataUpdated(m_satellites.size());
+    updatePositions();
 }
 
 void SatelliteTracker::fetchTransmitterData(const QString& url) {
@@ -175,8 +494,10 @@ void SatelliteTracker::fetchTransmitterData(const QString& url) {
     request.setHeader(QNetworkRequest::UserAgentHeader, "SatelliteTracker/1.0");
     request.setTransferTimeout(60000); // ~2 MB download, allow more than the default
     QNetworkReply* reply = m_networkManager->get(request);
+    m_transmitterFetchInFlight = true;
     
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        m_transmitterFetchInFlight = false;
         if (reply->error() == QNetworkReply::NoError) {
             QByteArray data = reply->readAll();
             if (loadTransmitterData(data)) {
@@ -238,28 +559,6 @@ void SatelliteTracker::applyTransponders(Satellite& sat) const {
         sat.transponders.clear();
         populateTransponders(sat);
     }
-}
-
-void SatelliteTracker::onTLEReplyFinished() {
-    QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
-    if (!reply) return;
-    
-    if (reply->error() == QNetworkReply::NoError) {
-        QString tleData = QString::fromUtf8(reply->readAll());
-        m_satellites = TLEParser::parseTLEData(tleData);
-        
-        // Populate transponder frequencies (SatNOGS, else built-in table)
-        for (Satellite& sat : m_satellites) {
-            applyTransponders(sat);
-        }
-        
-        emit tleDataUpdated(m_satellites.size());
-        updatePositions();
-    } else {
-        emit errorOccurred("Failed to fetch TLE data: " + reply->errorString());
-    }
-    
-    reply->deleteLater();
 }
 
 void SatelliteTracker::updatePositions() {

@@ -190,7 +190,10 @@ While running, the app serves a read/write JSON API on `http://127.0.0.1:8765`
 | GET  | `/satellites` | All satellites (`?visible=true` to filter, `?groundTrack=true` to include tracks) |
 | GET  | `/satellites/visible` | Satellites above the horizon |
 | GET  | `/satellites/{id}` | One satellite by NORAD catalog number or exact name |
-| POST | `/tle/refresh` | Re-download TLE data (optional `{"url": "..."}`) |
+| GET  | `/catalogs` | Available catalogs and the one loaded now |
+| GET  | `/catalog` | Loaded catalog: id, satellite count, data age, `loading` |
+| POST | `/catalog` | Load a catalog: `{"id": "starlink"}` (add `"refresh": true` to re-download) |
+| POST | `/tle/refresh` | Refresh the loaded catalog, or load `{"url": "..."}` instead |
 | GET  | `/passes` | Predicted passes, sorted by rise (`?hours=24&minElevation=10&satellite=ISS&receivableOnly=true`) |
 | GET  | `/radio` | Radio link status, tuned frequency, Doppler and manual offset (Hz) |
 | POST | `/radio/connect` | Connect to rigctl (optional `{"host": "127.0.0.1", "port": 7356}`) |
@@ -201,7 +204,8 @@ While running, the app serves a read/write JSON API on `http://127.0.0.1:8765`
 
 `mcp_server/satellite_tracker_mcp.py` wraps this API as MCP tools
 (`get_status`, `get_observer_location`, `set_observer_location`,
-`get_visible_satellites`, `list_all_satellites`, `get_satellite`, `refresh_tle_data`,
+`get_visible_satellites`, `list_all_satellites`, `get_satellite`, `list_catalogs`,
+`select_catalog`, `get_catalog`, `refresh_tle_data`,
 `get_passes`, `get_radio_status`, `connect_radio`, `tune_radio`, `stop_radio`).
 The Qt app must be running for the tools to return data.
 
@@ -230,20 +234,28 @@ or in a JSON MCP config:
 
 ## Customization
 
-### Change Satellite Categories
+### Satellite Catalogs
 
-Edit the TLE URL in `satellitetracker.cpp`:
+Pick a catalog from the **Catalog** box in the Controls panel (or with the
+`select_catalog` MCP tool). A catalog is downloaded only when you choose it,
+then cached in the app's cache folder. CelesTrak updates its data about every
+2 hours and blocks clients that download the same data more often, so a cached
+copy younger than 2 hours is reused, including when you press **Refresh Data**.
+If a download fails, the last cached copy is used. At startup only the
+last-used catalog is loaded.
 
-```cpp
-// Amateur satellites (default)
-fetchTLEData("https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle");
+| Catalog | CelesTrak source | Notes |
+|---------|------------------|-------|
+| Amateur radio | `GROUP=amateur` | The original default |
+| Russian weather | `NAME=METEOR-M`, `NAME=ELEKTRO-L` (CelesTrak publishes no elements for Arktika-M) | Meteor-M LRPT on 137 MHz is receivable with an RTL-SDR |
+| Russian & Chinese (all active) | `GROUP=active`, filtered by SATCAT owner `CIS` or `PRC` | Downloads the active SATCAT too (a few MB) |
+| Constellation: Starlink, OneWeb, Kuiper, Qianfan, Guowang | `GROUP=starlink`, `oneweb`, `kuiper`, `qianfan`, `hulianwang` | Visual only; Ku/Ka-band downlinks |
 
-// ISS and crew vehicles
-fetchTLEData("https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle");
+Rocket bodies and debris are dropped. When more than 60 satellites are in
+view, the sky map switches to small unlabeled dots and shows the track and
+labels only for the selected or hovered satellite.
 
-// Weather satellites
-fetchTLEData("https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle");
-```
+To add a catalog, add an entry to `SatelliteCatalog::all()` in `src/catalog.cpp`.
 
 ### Update Frequency
 

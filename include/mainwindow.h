@@ -33,6 +33,9 @@ private slots:
     void onErrorOccurred(const QString& error);
     void onUpdateTimer();
     void onFetchTLEClicked();
+    void onCatalogActivated(int index);
+    void onCatalogLoading(const QString& catalogId);
+    void onCatalogLoaded(const QString& catalogId);
     void onAutoLocateClicked();
     void onLocationEditFinished();
     void onTableSelectionChanged();
@@ -50,6 +53,8 @@ private:
     QTableWidget* m_satelliteTable;
     QLabel* m_statusLabel;
     QLabel* m_locationLabel;
+    QLabel* m_catalogLabel;
+    QComboBox* m_catalogCombo;
     QPushButton* m_fetchTLEButton;
     QPushButton* m_autoLocateButton;
     QLineEdit* m_latEdit;
@@ -80,6 +85,8 @@ private:
     void setupUI();
     void setupConnections();
     void updateSatelliteTable();
+    void updateCatalogLabel();
+    void selectCatalogInCombo(const QString& catalogId);
     void setRadioSatellite(const QString& satelliteName);
     bool findSatellite(const QString& name, Satellite* out) const;
 };
