@@ -4,6 +4,7 @@
 #include <QHeaderView>
 #include <QSplitter>
 #include <QSettings>
+#include <QScrollBar>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -189,6 +190,14 @@ void MainWindow::setupUI() {
     m_satelliteTable->setAlternatingRowColors(true);
     m_satelliteTable->setSortingEnabled(true); // Enable sorting
     m_satelliteTable->setMinimumWidth(700); // Minimum width for table
+    // The table is rebuilt every 2 s and the selected row is re-selected. With
+    // auto-scroll on, making it current scrolls the view back to that row's
+    // first column, so browsing the table kept jumping. Clicks on the sky map
+    // still scroll to the satellite explicitly (scrollToItem).
+    m_satelliteTable->setAutoScroll(false);
+    // One line per frequency: rows grow to fit instead of the column growing wide
+    m_satelliteTable->setWordWrap(false);
+    m_satelliteTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 
     splitter->addWidget(m_satelliteTable);
 
@@ -401,6 +410,10 @@ void MainWindow::updateSatelliteTable() {
         selectedSatName = skyMapSelection;
     }
 
+    // Keep the user's scroll position across the rebuild
+    const int vScroll = m_satelliteTable->verticalScrollBar()->value();
+    const int hScroll = m_satelliteTable->horizontalScrollBar()->value();
+
     // Block ALL signals to prevent any events during update
     m_satelliteTable->blockSignals(true);
 
@@ -459,18 +472,20 @@ void MainWindow::updateSatelliteTable() {
         } else {
             QStringList freqList;
             for (const Transponder& trans : sat.transponders) {
-                QString freq;
                 if (trans.downlinkFreq > 0) {
-                    freq = QString("↓%1 MHz (%2)")
+                    QString freq = QString("↓%1 MHz (%2)")
                         .arg(trans.downlinkFreq, 0, 'f', 3)
                         .arg(trans.mode);
-                    freqList.append(freq);
+                    // SatNOGS often lists the same downlink/mode more than once
+                    if (!freqList.contains(freq)) freqList.append(freq);
                 }
             }
-            freqText = freqList.join("; ");
+            freqText = freqList.join('\n');  // one line per downlink, in the same cell
             if (freqText.isEmpty()) freqText = "N/A";
         }
-        m_satelliteTable->setItem(i, 5, new QTableWidgetItem(freqText));
+        QTableWidgetItem* freqItem = new QTableWidgetItem(freqText);
+        freqItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        m_satelliteTable->setItem(i, 5, freqItem);
 
         // Status (approaching/departing)
         QString status;
@@ -519,6 +534,11 @@ void MainWindow::updateSatelliteTable() {
         // No selection - clear current item too
         m_satelliteTable->setCurrentItem(nullptr);
     }
+
+    // Put the view back where the user left it (row order can shift as
+    // elevations change, but the view no longer jumps to the selection)
+    m_satelliteTable->verticalScrollBar()->setValue(vScroll);
+    m_satelliteTable->horizontalScrollBar()->setValue(hScroll);
 
     // Unblock signals AFTER selection is restored
     m_satelliteTable->blockSignals(false);

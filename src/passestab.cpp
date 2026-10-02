@@ -225,13 +225,12 @@ void PassesTab::updateSummary(const QDateTime& nowUtc) {
     if (m_watcher->isRunning()) return;  // keep "Calculating passes..." visible
 
     QString text = QString("%1 passes in the next %2 h").arg(m_shown.size()).arg(m_hoursSpin->value());
-    QStringList now;
+    // Passes in progress are already highlighted in the table, so they are not
+    // listed here (with a large catalog that list made the window very wide)
     const SatellitePass* next = nullptr;
     for (const SatellitePass& pass : m_shown) {
-        if (pass.isInProgress(nowUtc)) now.append(pass.satelliteName);
-        else if (!next || pass.aos < next->aos) next = &pass;
+        if (!pass.isInProgress(nowUtc) && (!next || pass.aos < next->aos)) next = &pass;
     }
-    if (!now.isEmpty()) text += "   |   Up now: " + now.join(", ");
     if (next) {
         text += QString("   |   Next: %1 in %2 (%3°)")
                     .arg(next->satelliteName, PassPredictor::formatDuration(nowUtc.secsTo(next->aos)))
