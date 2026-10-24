@@ -6,6 +6,13 @@
 A C++ GUI application for tracking satellites in real-time, showing which satellites are currently visible from your location.
 Valid radio frequencies provided, per satellite, when available.
 
+Latest version supports Software Defined Radio (SDR) allowing automatic tuning to satellite frequency when satellite is
+selected.  Also, a search and planning screen allowing selection of upcoming satellite passes.  Satellites beyond "Amateur Radio"
+now available including Russian and Chinese birds, Starlink and other constelations.
+
+Upcoming - Agentic AI to automatically tune into frequency of satellite most likely receivable.  Receivability based on maximum
+azimuth per pass.  
+
 ## Features
 
 - **Real-time satellite tracking** - Updates every 2 seconds
