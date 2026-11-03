@@ -1,6 +1,8 @@
 # Satellite Tracker
 
-<img width="958" height="738" alt="image" src="https://github.com/user-attachments/assets/e4f72f50-74a9-44a0-9e86-b0984b589cb8" />
+<a href="images/satellite-tracker-sdr-setup.jpg"><img width="100%" alt="Satellite Tracker on a MacBook Pro tracking COSMOS 2532 across a sky plot, with Gqrx tuned to its 387 MHz downlink through a Nooelec RTL-SDR" src="images/satellite-tracker-sdr-setup.jpg" /></a>
+
+*Click the image to open the full-resolution version (4000×3000). From there you can zoom in or use the download button.*
 
 
 A C++ GUI application for tracking satellites in real-time, showing which satellites are currently visible from your location.
